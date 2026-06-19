@@ -1,0 +1,92 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: macos-latest
+            arch: arm64
+            target: aarch64-apple-darwin
+          - os: macos-13
+            arch: amd64
+            target: x86_64-apple-darwin
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+          check-latest: true
+
+      - name: Build
+        env:
+          GOOS: darwin
+          GOARCH: ${{ matrix.arch == 'arm64' && 'arm64' || 'amd64' }}
+        run: |
+          go build -o orbit-${{ matrix.target }} ./cmd/orbit
+
+      - name: Create checksum
+        run: |
+          sha256sum orbit-${{ matrix.target }} > orbit-${{ matrix.target }}.sha256
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: orbit-${{ matrix.target }}
+          path: orbit-${{ matrix.target }}*
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+
+      - name: Organize artifacts
+        run: |
+          mkdir -p release
+          find . -name "orbit-*" -type f -exec mv {} release/ \;
+          cd release && ls -la
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION=${GITHUB_REF#refs/tags/}
+          gh release create "$VERSION" release/* \
+            --title "Orbit $VERSION" \
+            --notes "Pre-built binaries for macOS (arm64 + x86_64).
+
+          ## Install
+
+          Download the binary for your architecture and install:
+
+          \`\`\`sh
+          # For Apple Silicon (arm64):
+          curl -L https://github.com/$(git config --get remote.origin.url | sed 's/.*://' | sed 's/.git$//)/releases/download/$VERSION/orbit-aarch64-apple-darwin -o orbit
+          chmod +x orbit
+          claude mcp add orbit -- \$PWD/orbit
+
+          # For Intel (amd64):
+          curl -L https://github.com/$(git config --get remote.origin.url | sed 's/.*://' | sed 's/.git$//)/releases/download/$VERSION/orbit-x86_64-apple-darwin -o orbit
+          chmod +x orbit
+          claude mcp add orbit -- \$PWD/orbit
+          \`\`\`
+
+          Or install via Homebrew (once tapped):
+
+          \`\`\`sh
+          brew tap anthropics/orbit
+          brew install orbit
+          \`\`\`
+          "
