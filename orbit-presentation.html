@@ -1,0 +1,311 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Orbit — Technical Presentation</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@3.19.0/dist/tabler-icons.min.css">
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --color-bg:#ffffff;
+  --color-bg-secondary:#f5f5f3;
+  --color-bg-info:#e6f1fb;
+  --color-bg-success:#eaf3de;
+  --color-bg-warning:#faeeda;
+  --color-text:#1a1a18;
+  --color-text-secondary:#5f5e5a;
+  --color-text-tertiary:#888780;
+  --color-text-info:#0c447c;
+  --color-text-success:#27500a;
+  --color-text-warning:#633806;
+  --color-border:#e8e6df;
+  --color-border-secondary:#d3d1c7;
+  --radius-md:8px;
+  --radius-lg:12px;
+  --font-sans:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
+  --font-mono:'SF Mono','Fira Code',monospace;
+}
+@media(prefers-color-scheme:dark){
+  :root{
+    --color-bg:#1e1e1c;
+    --color-bg-secondary:#2a2a28;
+    --color-bg-info:#042c53;
+    --color-bg-success:#173404;
+    --color-bg-warning:#412402;
+    --color-text:#e8e6df;
+    --color-text-secondary:#b4b2a9;
+    --color-text-tertiary:#888780;
+    --color-text-info:#85b7eb;
+    --color-text-success:#97c459;
+    --color-text-warning:#ef9f27;
+    --color-border:#3a3a38;
+    --color-border-secondary:#4a4a48;
+  }
+}
+body{
+  font-family:var(--font-sans);
+  background:var(--color-bg);
+  color:var(--color-text);
+  min-height:100vh;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  padding:2rem;
+}
+.deck{width:100%;max-width:780px}
+.slide{display:none;min-height:420px;flex-direction:column;justify-content:flex-start}
+.slide.active{display:flex}
+.nav{display:flex;align-items:center;justify-content:space-between;margin-bottom:1.5rem}
+.nav-pills{display:flex;gap:6px;align-items:center}
+.pill{width:8px;height:8px;border-radius:50%;background:var(--color-border-secondary);cursor:pointer;border:none;padding:0;transition:background 0.15s}
+.pill.on{background:var(--color-text-secondary)}
+.nav-btns{display:flex;gap:8px}
+.nav-btns button{
+  background:transparent;
+  border:0.5px solid var(--color-border-secondary);
+  border-radius:var(--radius-md);
+  padding:6px 10px;
+  cursor:pointer;
+  color:var(--color-text);
+  font-size:16px;
+  transition:background 0.1s;
+}
+.nav-btns button:hover{background:var(--color-bg-secondary)}
+.slide-label{font-size:12px;color:var(--color-text-tertiary);font-weight:500;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:0.5rem}
+.slide-title{font-size:26px;font-weight:500;margin-bottom:1.25rem;line-height:1.3}
+.slide-subtitle{font-size:15px;color:var(--color-text-secondary);margin-bottom:1.5rem;line-height:1.7}
+.card{background:var(--color-bg);border:0.5px solid var(--color-border);border-radius:var(--radius-lg);padding:1rem 1.25rem}
+.grid2{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:12px}
+.grid3{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px}
+.grid4{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px}
+.card-label{font-size:11px;font-weight:500;color:var(--color-text-tertiary);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:6px}
+.card-title{font-size:14px;font-weight:500;margin-bottom:6px}
+.card-body{font-size:13px;color:var(--color-text-secondary);line-height:1.6}
+code{font-family:var(--font-mono);font-size:12px;background:var(--color-bg-secondary);padding:1px 5px;border-radius:4px}
+.stat{background:var(--color-bg-secondary);border-radius:var(--radius-md);padding:1.25rem;text-align:center}
+.stat-n{font-size:32px;font-weight:500;color:var(--color-text)}
+.stat-l{font-size:12px;color:var(--color-text-secondary);margin-top:4px}
+.chip{display:inline-block;font-size:11px;font-weight:500;padding:3px 8px;border-radius:var(--radius-md);margin:2px}
+.chip-p{background:var(--color-bg-info);color:var(--color-text-info)}
+.chip-t{background:var(--color-bg-success);color:var(--color-text-success)}
+.chip-w{background:var(--color-bg-warning);color:var(--color-text-warning)}
+.row{display:flex;align-items:flex-start;gap:12px;margin-bottom:14px}
+.icon-box{width:34px;height:34px;border-radius:var(--radius-md);background:var(--color-bg-secondary);display:flex;align-items:center;justify-content:center;flex-shrink:0;font-size:18px;color:var(--color-text-secondary)}
+.flow{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:1.25rem}
+.fbox{background:var(--color-bg);border:0.5px solid var(--color-border);border-radius:var(--radius-md);padding:7px 14px;font-size:13px;font-weight:500}
+.fbox-hl{background:var(--color-bg-info);border-color:var(--color-border-secondary);color:var(--color-text-info)}
+.farr{color:var(--color-text-tertiary);font-size:18px}
+.code-block{font-family:var(--font-mono);font-size:12px;background:var(--color-bg-secondary);border-radius:var(--radius-md);padding:1rem 1.25rem;line-height:1.8;color:var(--color-text);border:0.5px solid var(--color-border);margin-bottom:1rem}
+.hl{color:var(--color-text-info)}
+.dim{color:var(--color-text-tertiary)}
+.adr-row{display:flex;gap:10px;align-items:baseline;padding:8px 0;border-bottom:0.5px solid var(--color-border)}
+.adr-row:last-child{border:none}
+.adr-n{font-size:11px;font-weight:500;color:var(--color-text-tertiary);min-width:52px;font-family:var(--font-mono)}
+.adr-d{font-size:13px;color:var(--color-text);flex:1}
+.adr-chip{font-size:11px;padding:2px 8px;border-radius:var(--radius-md);background:var(--color-bg-success);color:var(--color-text-success);margin-left:8px;flex-shrink:0;font-weight:500}
+.adr-chip.sec{background:var(--color-bg-info);color:var(--color-text-info)}
+.adr-chip.dep{background:var(--color-bg-secondary);color:var(--color-text-secondary)}
+.adr-chip.ux{background:var(--color-bg-warning);color:var(--color-text-warning)}
+.slide-counter{font-size:12px;color:var(--color-text-tertiary);margin-left:12px}
+</style>
+</head>
+<body>
+<div class="deck">
+
+<div class="nav">
+  <div style="display:flex;align-items:center">
+    <div class="nav-pills" id="pills"></div>
+    <span class="slide-counter" id="counter">1 / 8</span>
+  </div>
+  <div class="nav-btns">
+    <button onclick="go(-1)" aria-label="Previous slide"><i class="ti ti-arrow-left"></i></button>
+    <button onclick="go(1)" aria-label="Next slide"><i class="ti ti-arrow-right"></i></button>
+  </div>
+</div>
+
+<div id="slides">
+
+<div class="slide active">
+  <div class="slide-label">Orbit — technical overview</div>
+  <div class="slide-title">Autonomous agent infrastructure<br>on OrbStack</div>
+  <div class="slide-subtitle">A single-binary MCP server that gives an AI agent the ability to create isolated Linux VMs, run containers, execute work over SSH, and store all secrets in a local encrypted vault — with every action logged to an append-only audit trail.</div>
+  <div class="grid4" style="margin-top:auto">
+    <div class="stat"><div class="stat-n">32</div><div class="stat-l">MCP tools</div></div>
+    <div class="stat"><div class="stat-n">16 MB</div><div class="stat-l">single binary</div></div>
+    <div class="stat"><div class="stat-n">9</div><div class="stat-l">packages</div></div>
+    <div class="stat"><div class="stat-n">11</div><div class="stat-l">ADRs</div></div>
+  </div>
+</div>
+
+<div class="slide">
+  <div class="slide-label">Slide 2 of 8 — Architecture</div>
+  <div class="slide-title">Layer architecture</div>
+  <div class="flow">
+    <div class="fbox fbox-hl"><i class="ti ti-brain" style="margin-right:5px"></i>Claude agent</div>
+    <span class="farr">→</span>
+    <div class="fbox">stdio JSON-RPC</div>
+    <span class="farr">→</span>
+    <div class="fbox" style="font-weight:600">orbit binary</div>
+    <span class="farr">→</span>
+    <div class="fbox">tools layer</div>
+  </div>
+  <div class="grid3">
+    <div class="card"><div class="card-label">vm subsystem</div><div class="card-body"><code>orbctl</code> wrapper + multi-distro provisioner. Shells out to <code>orb -u root sh -s</code> for setup. State cached in vault.</div></div>
+    <div class="card"><div class="card-label">exec subsystem</div><div class="card-body">SSH task runner via <code>golang.org/x/crypto/ssh</code>. Direct dial to <code>&lt;vm&gt;.orb.local:22</code>. Exec, scripts, SFTP, parallel fan-out.</div></div>
+    <div class="card"><div class="card-label">container subsystem</div><div class="card-body"><code>docker</code> + <code>docker compose</code> driver. Inline YAML via stdin. Vault secret injection. <code>.orb.local</code> endpoint surfacing.</div></div>
+    <div class="card"><div class="card-label">vault</div><div class="card-body">AES-256-GCM + Argon2id + SQLite. Source of truth for credentials, keys, and VM metadata.</div></div>
+    <div class="card"><div class="card-label">audit</div><div class="card-body">Append-only JSONL at <code>~/.orbit/audit.log</code>. Every tool call logged. Secret values structurally excluded.</div></div>
+    <div class="card"><div class="card-label">keychain</div><div class="card-body">Vault passphrase from macOS Keychain via <code>security</code> CLI. Auto-generates on first run. <code>ORBIT_PASSPHRASE</code> env override.</div></div>
+  </div>
+</div>
+
+<div class="slide">
+  <div class="slide-label">Slide 3 of 8 — Security model</div>
+  <div class="slide-title">Security invariants</div>
+  <div>
+    <div class="row">
+      <div class="icon-box"><i class="ti ti-key"></i></div>
+      <div><div class="card-title">Private keys never touch disk</div><div class="card-body">Ed25519 keys are decrypted from the vault into process memory for the lifetime of one SSH connection, then GC'd. The Go SSH client accepts an in-memory <code>ssh.Signer</code> — no temp files needed.</div></div>
+    </div>
+    <div class="row">
+      <div class="icon-box"><i class="ti ti-eye-off"></i></div>
+      <div><div class="card-title">Secret values never appear in argv</div><div class="card-body">Container <code>secret_env</code> maps env-var name → vault key. The value is placed in the docker subprocess's environment. Docker receives a bare <code>-e NAME</code> flag — not <code>-e NAME=value</code>. Invisible to <code>ps</code>.</div></div>
+    </div>
+    <div class="row">
+      <div class="icon-box"><i class="ti ti-lock"></i></div>
+      <div><div class="card-title">Vault is encrypted at rest</div><div class="card-body">Argon2id derives the AES key (salt=32B, m=64MiB, t=3, p=4 — ~300ms). Fresh 12-byte IV per write. Auth tag detects tampering. Derived key never persisted.</div></div>
+    </div>
+    <div class="row">
+      <div class="icon-box"><i class="ti ti-clipboard-list"></i></div>
+      <div><div class="card-title">Audit log records metadata only</div><div class="card-body">Tool handlers call <code>envNames()</code> to extract only key names, never values. <code>cred_list</code> and <code>key_list</code> return names and metadata — never plaintext secrets.</div></div>
+    </div>
+  </div>
+</div>
+
+<div class="slide">
+  <div class="slide-label">Slide 4 of 8 — VM lifecycle</div>
+  <div class="slide-title">VM lifecycle: <code>vm_create</code></div>
+  <div class="flow" style="margin-bottom:1.25rem">
+    <div class="fbox">generate Ed25519 key</div><span class="farr">→</span>
+    <div class="fbox">orbctl create --isolated</div><span class="farr">→</span>
+    <div class="fbox">provision via orb root</div><span class="farr">→</span>
+    <div class="fbox">SSH ready</div>
+  </div>
+  <div class="grid2">
+    <div class="card">
+      <div class="card-label">Multi-distro provisioner</div>
+      <div class="card-body" style="margin-bottom:8px">A single POSIX sh script auto-detects the package manager and init system:</div>
+      <div style="margin-bottom:6px"><span class="chip chip-p">apt</span><span class="chip chip-p">apk</span><span class="chip chip-p">dnf</span><span class="chip chip-p">yum</span><span class="chip chip-p">zypper</span><span class="chip chip-p">pacman</span></div>
+      <div style="margin-bottom:8px"><span class="chip chip-t">systemd</span><span class="chip chip-t">OpenRC</span><span class="chip chip-t">runit</span></div>
+      <div class="card-body">No cloud-init — OrbStack only ships it for Debian/Ubuntu. Alpine, Fedora, and Arch all work with the script (ADR-003).</div>
+    </div>
+    <div class="card">
+      <div class="card-label">Why direct SSH, not the multiplexer</div>
+      <div class="card-body">OrbStack's <code>127.0.0.1:32222</code> multiplexer uses a single host key and ignores per-VM <code>authorized_keys</code>. Using it collapses all VM credentials onto one identity. Orbit dials <code>&lt;vm&gt;.orb.local:22</code> directly so each VM keeps its own keypair (ADR-002).</div>
+    </div>
+  </div>
+</div>
+
+<div class="slide">
+  <div class="slide-label">Slide 5 of 8 — Containers</div>
+  <div class="slide-title">Container tools + secret injection</div>
+  <div class="code-block">
+    <span class="dim">agent calls</span>  container_run(<span class="hl">image</span>="postgres:16", <span class="hl">secret_env</span>={"POSTGRES_PASSWORD": "prod-db-pw"})<br><br>
+    <span class="dim">orbit reads</span>  vault.GetCredential("default", "prod-db-pw") → value <span class="dim">(in memory)</span><br>
+    <span class="dim">orbit builds</span> argv: docker run -d <span class="hl">-e POSTGRES_PASSWORD</span> postgres:16  <span class="dim">← no value in argv</span><br>
+    <span class="dim">orbit sets</span>  subprocess env: POSTGRES_PASSWORD=<span class="hl">hunter2</span>          <span class="dim">← value here only</span><br>
+    <span class="dim">audit logs</span>  {"secret_env": ["POSTGRES_PASSWORD"]}              <span class="dim">← name only</span>
+  </div>
+  <div class="grid3">
+    <div class="card"><div class="card-label">Lifecycle</div><div class="card-body"><code>container_run</code> <code>container_exec</code> <code>container_logs</code> <code>container_list</code> <code>container_stop</code> <code>container_rm</code></div></div>
+    <div class="card"><div class="card-label">Compose stack</div><div class="card-body"><code>compose_up</code> <code>compose_down</code> <code>compose_logs</code> <code>compose_ps</code> <code>compose_exec</code> <code>compose_build</code></div></div>
+    <div class="card"><div class="card-label">Images</div><div class="card-body"><code>image_build</code> — host context or inline Dockerfile via stdin. Compose YAML also accepted inline via <code>-f -</code>. No temp files.</div></div>
+  </div>
+</div>
+
+<div class="slide">
+  <div class="slide-label">Slide 6 of 8 — Tools surface</div>
+  <div class="slide-title">32 MCP tools across 5 groups</div>
+  <div style="display:flex;flex-direction:column;gap:8px">
+    <div class="card" style="padding:0.75rem 1rem"><div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap"><span class="card-label" style="min-width:90px;margin-bottom:0">vm_*</span><span class="chip chip-p">vm_create</span><span class="chip chip-p">vm_list</span><span class="chip chip-p">vm_start</span><span class="chip chip-p">vm_stop</span><span class="chip chip-p">vm_destroy</span></div></div>
+    <div class="card" style="padding:0.75rem 1rem"><div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap"><span class="card-label" style="min-width:90px;margin-bottom:0">key_*</span><span class="chip chip-t">key_generate</span><span class="chip chip-t">key_list</span><span class="chip chip-t">key_rotate</span><span class="chip chip-t">key_revoke</span><span class="chip chip-t">key_export_public</span></div></div>
+    <div class="card" style="padding:0.75rem 1rem"><div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap"><span class="card-label" style="min-width:90px;margin-bottom:0">exec / file</span><span class="chip chip-w">exec</span><span class="chip chip-w">exec_script</span><span class="chip chip-w">exec_parallel</span><span class="chip chip-w">file_push</span><span class="chip chip-w">file_pull</span></div></div>
+    <div class="card" style="padding:0.75rem 1rem"><div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap"><span class="card-label" style="min-width:90px;margin-bottom:0">cred_*</span><span class="chip chip-p">cred_set</span><span class="chip chip-p">cred_get</span><span class="chip chip-p">cred_list</span><span class="chip chip-p">cred_delete</span></div></div>
+    <div class="card" style="padding:0.75rem 1rem"><div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap"><span class="card-label" style="min-width:90px;margin-bottom:0">container</span><span class="chip chip-t">container_run</span><span class="chip chip-t">container_exec</span><span class="chip chip-t">container_logs</span><span class="chip chip-t">container_list</span><span class="chip chip-t">container_stop</span><span class="chip chip-t">container_rm</span><span class="chip chip-t">compose_up</span><span class="chip chip-t">compose_down</span><span class="chip chip-t">compose_logs</span><span class="chip chip-t">compose_ps</span><span class="chip chip-t">compose_exec</span><span class="chip chip-t">compose_build</span><span class="chip chip-t">image_build</span></div></div>
+  </div>
+</div>
+
+<div class="slide">
+  <div class="slide-label">Slide 7 of 8 — Key decisions</div>
+  <div class="slide-title">Architecture decision records</div>
+  <div>
+    <div class="adr-row"><span class="adr-n">ADR-001</span><span class="adr-d">Go over TypeScript — in-memory SSH signers, stdlib crypto, single cgo-free binary</span><span class="adr-chip dep">core</span></div>
+    <div class="adr-row"><span class="adr-n">ADR-002</span><span class="adr-d">Direct SSH to <code>&lt;vm&gt;.orb.local:22</code> — multiplexer collapses credentials</span><span class="adr-chip sec">security</span></div>
+    <div class="adr-row"><span class="adr-n">ADR-003</span><span class="adr-d">Root provisioning script — cloud-init absent on Alpine / Fedora / Arch</span><span class="adr-chip">portability</span></div>
+    <div class="adr-row"><span class="adr-n">ADR-004</span><span class="adr-d">AES-256-GCM + Argon2id vault in SQLite — local, encrypted, single file</span><span class="adr-chip sec">security</span></div>
+    <div class="adr-row"><span class="adr-n">ADR-005</span><span class="adr-d">Container tools with vault secret injection via bare <code>-e NAME</code></span><span class="adr-chip sec">security</span></div>
+    <div class="adr-row"><span class="adr-n">ADR-006</span><span class="adr-d"><code>compose_exec</code> via <code>ComposePs</code> resolution — avoids stdin conflict with inline YAML</span><span class="adr-chip">design</span></div>
+    <div class="adr-row"><span class="adr-n">ADR-007</span><span class="adr-d">Drop uuid dep — <code>crypto/rand</code> hex gives same 128-bit entropy; generic <code>sortedKeys</code></span><span class="adr-chip dep">deps</span></div>
+    <div class="adr-row"><span class="adr-n">ADR-008</span><span class="adr-d">Inline compose YAML via stdin (<code>-f -</code>) — no temp files, no cleanup surface</span><span class="adr-chip">design</span></div>
+    <div class="adr-row"><span class="adr-n">ADR-009</span><span class="adr-d">JSONL audit log now — slog / metrics / OTel deferred to ROADMAP §4</span><span class="adr-chip">scope</span></div>
+    <div class="adr-row"><span class="adr-n">ADR-010</span><span class="adr-d">Vault passphrase via macOS Keychain with env override and auto-generation</span><span class="adr-chip ux">ux</span></div>
+    <div class="adr-row"><span class="adr-n">ADR-011</span><span class="adr-d">SSH host-key trust-on-connect — bounded by loopback; TOFU pinning in ROADMAP §3</span><span class="adr-chip sec">security</span></div>
+  </div>
+</div>
+
+<div class="slide">
+  <div class="slide-label">Slide 8 of 8 — Distribution</div>
+  <div class="slide-title">Distribution & release pipeline</div>
+  <div class="grid2" style="margin-bottom:1.25rem">
+    <div class="card">
+      <div class="card-label">GitHub Releases</div>
+      <div class="card-body" style="margin-bottom:12px">Push a <code>v*</code> tag → Actions builds arm64 + amd64 binaries on real macOS runners → creates release with SHA256 checksums automatically.</div>
+      <div class="code-block" style="font-size:12px;margin:0">git tag v0.1.0<br>git push origin v0.1.0<br><span class="dim"># CI builds + publishes</span></div>
+    </div>
+    <div class="card">
+      <div class="card-label">Homebrew tap</div>
+      <div class="card-body" style="margin-bottom:12px">Formula in <code>Formula/orbit.rb</code>. After each release: update version + SHA256 from release assets, push to tap repo.</div>
+      <div class="code-block" style="font-size:12px;margin:0">brew tap YOUR/orbit<br>brew install orbit<br>claude mcp add orbit -- $(which orbit)</div>
+    </div>
+  </div>
+  <div class="grid3">
+    <div class="stat"><div class="stat-n">2</div><div class="stat-l">CI workflows</div></div>
+    <div class="stat"><div class="stat-n">macOS</div><div class="stat-l">arm64 + amd64</div></div>
+    <div class="stat"><div class="stat-n">0</div><div class="stat-l">runtime dependencies</div></div>
+  </div>
+</div>
+
+</div>
+</div>
+
+<script>
+var cur=0;
+var slides=document.querySelectorAll('.slide');
+var n=slides.length;
+var pc=document.getElementById('pills');
+var counter=document.getElementById('counter');
+for(var i=0;i<n;i++){
+  var b=document.createElement('button');
+  b.className='pill'+(i===0?' on':'');
+  b.setAttribute('aria-label','Go to slide '+(i+1));
+  b.dataset.i=i;
+  b.onclick=function(){jump(+this.dataset.i)};
+  pc.appendChild(b);
+}
+function go(d){jump((cur+d+n)%n)}
+function jump(i){
+  slides[cur].classList.remove('active');
+  pc.children[cur].classList.remove('on');
+  cur=i;
+  slides[cur].classList.add('active');
+  pc.children[cur].classList.add('on');
+  counter.textContent=(cur+1)+' / '+n;
+}
+document.addEventListener('keydown',function(e){
+  if(e.key==='ArrowRight'||e.key==='ArrowDown')go(1);
+  if(e.key==='ArrowLeft'||e.key==='ArrowUp')go(-1);
+});
+</script>
+</body>
+</html>
