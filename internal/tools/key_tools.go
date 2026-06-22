@@ -3,6 +3,7 @@ package tools
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
@@ -38,8 +39,12 @@ func registerKeyTools(server *mcp.Server, d *Deps) {
 			return nil, nil, err
 		}
 		if args.AssociateVM != "" {
-			// Best-effort: the VM record may not exist yet.
-			d.VMs.SetKey(args.AssociateVM, id)
+			// Best-effort: the VM record may not exist yet. Surface a real
+			// failure to the audit log so a silent vault/VM inconsistency
+			// (key stored but no VM points to it) is at least observable.
+			if serr := d.VMs.SetKey(args.AssociateVM, id); serr != nil {
+				d.log("key_generate.associate", map[string]any{"associate_vm": args.AssociateVM, "key_id": id}, serr)
+			}
 		}
 		pub, err := kp.AuthorizedKey()
 		if err != nil {
@@ -101,9 +106,20 @@ func registerKeyTools(server *mcp.Server, d *Deps) {
 	})
 }
 
-// rotateKey implements the spec's key_rotate: new key in memory → push to
-// the VM's authorized_keys (authenticated with the old key) → persist the
-// new key in the vault under the same label.
+// rotateKey rotates a VM's keypair without ever leaving a lockout window. The
+// vault stores one credential per VM and rotates it in place, so a single
+// push-then-store (or store-then-push) ordering would, on a failure between the
+// two steps, leave the VM accepting only a key the vault no longer holds —
+// unrecoverable. Instead it runs three ordered, individually-safe steps:
+//
+//  1. APPEND the new public key to authorized_keys (old + new both work),
+//     authenticated with the old key.
+//  2. PERSIST the new private key into the vault (in place, same credential id).
+//  3. PRUNE authorized_keys down to the new key only, authenticated with the
+//     new key (loaded fresh from the vault — this also verifies it works).
+//
+// After every step the VM still accepts a key the vault holds, so a failure at
+// any point is recoverable by simply re-running key_rotate.
 func rotateKey(ctx context.Context, d *Deps, vmID string) (string, error) {
 	rec, err := d.Vault.GetVM(vmID)
 	if err != nil {
@@ -122,23 +138,43 @@ func rotateKey(ctx context.Context, d *Deps, vmID string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-
-	// Replace (not append): the old key stops working in the same step.
-	cmd := fmt.Sprintf(`mkdir -p ~/.ssh && chmod 700 ~/.ssh && printf '%%s\n' '%s' > ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys`, pub)
-	res, err := d.Runner.Exec(ctx, vmID, cmd)
-	if err != nil {
-		return "", fmt.Errorf("key_rotate: updating authorized_keys on %s: %w", vmID, err)
-	}
-	if res.ExitCode != 0 {
-		return "", fmt.Errorf("key_rotate: updating authorized_keys on %s failed (exit %d): %s", vmID, res.ExitCode, res.Stderr)
+	// Defensive: the authorized_keys line is interpolated into a single-quoted
+	// shell word below. An Ed25519 line never contains a quote, but never trust
+	// that — reject rather than risk a shell break-out.
+	if strings.ContainsAny(pub, "'\n") {
+		return "", fmt.Errorf("key_rotate: refusing to install malformed public key for %s", vmID)
 	}
 
-	keyID, err := d.Keys.Put(label, vmID, newKP)
-	if err != nil {
+	// Step 1: append the new key (still authenticated with the old key).
+	appendCmd := fmt.Sprintf(`mkdir -p ~/.ssh && chmod 700 ~/.ssh && touch ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys && printf '%%s\n' '%s' >> ~/.ssh/authorized_keys`, pub)
+	if err := runRemote(ctx, d, vmID, appendCmd, "appending new key to authorized_keys"); err != nil {
 		return "", err
 	}
-	if err := d.VMs.SetKey(vmID, keyID); err != nil {
+
+	// Step 2: persist the new key. The VM still accepts the old key, so a
+	// failure here is safe — the old vault key keeps working.
+	if _, err := d.Keys.Put(label, vmID, newKP); err != nil {
+		return "", fmt.Errorf("key_rotate: persisting new key for %s: %w", vmID, err)
+	}
+
+	// Step 3: prune to the new key only. Runner now loads the new key from the
+	// vault, so this both removes the old key and verifies the new one works.
+	pruneCmd := fmt.Sprintf(`mkdir -p ~/.ssh && chmod 700 ~/.ssh && printf '%%s\n' '%s' > ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys`, pub)
+	if err := runRemote(ctx, d, vmID, pruneCmd, "pruning old key from authorized_keys"); err != nil {
 		return "", err
 	}
 	return pub, nil
+}
+
+// runRemote runs cmd on the VM and turns a non-zero exit into an error, with a
+// stage label for diagnostics.
+func runRemote(ctx context.Context, d *Deps, vmID, cmd, stage string) error {
+	res, err := d.Runner.Exec(ctx, vmID, cmd)
+	if err != nil {
+		return fmt.Errorf("key_rotate: %s on %s: %w", stage, vmID, err)
+	}
+	if res.ExitCode != 0 {
+		return fmt.Errorf("key_rotate: %s on %s failed (exit %d): %s", stage, vmID, res.ExitCode, res.Stderr)
+	}
+	return nil
 }

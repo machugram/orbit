@@ -200,7 +200,7 @@ func TestPushAndPull(t *testing.T) {
 
 func TestExecScriptUploadsRunsAndCleans(t *testing.T) {
 	r := testEnv(t, "vm1")
-	res, err := r.ExecScript(context.Background(), "vm1", "#!/bin/sh\necho from script\n", "run")
+	res, err := r.ExecScript(context.Background(), "vm1", "#!/bin/sh\necho from script\n", "sh")
 	if err != nil {
 		t.Fatal(err)
 	}

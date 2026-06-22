@@ -66,19 +66,19 @@ After the GitHub Release is created and you've verified the binaries:
 If you haven't created a personal tap yet:
 
 ```sh
-# Create a new repo on GitHub: https://github.com/YOUR-USERNAME/homebrew-orbit
+# Create a new repo on GitHub: https://github.com/machugram/homebrew-orbit
 
-git clone git@github.com:YOUR-USERNAME/homebrew-orbit.git
+git clone git@github.com:machugram/homebrew-orbit.git
 mkdir -p Formula
 cp /path/to/orbit/Formula/orbit.rb Formula/
 git add Formula/orbit.rb
-git commit -m "Initial commit: orbit formula"
+git commit -m "release: orbit formula"
 git push origin main
 ```
 
 Then users can install with:
 ```sh
-brew tap YOUR-USERNAME/orbit
+brew tap machugram/orbit
 brew install orbit
 ```
 

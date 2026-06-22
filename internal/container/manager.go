@@ -85,11 +85,13 @@ func (m *Manager) resolveSecrets(namespace string, secretEnv map[string]string) 
 	return env, flags, nil
 }
 
-// literalEnvFlags returns `-e NAME=VALUE` flags for literal (non-secret) env.
-func literalEnvFlags(env map[string]string) []string {
+// bareEnvFlags returns deterministic `-e NAME` flags (no value) for every key
+// in env. The values travel through the docker subprocess environment instead
+// of argv, so neither secrets nor literal env vars appear in `ps`/`/proc`.
+func bareEnvFlags(env map[string]string) []string {
 	flags := make([]string, 0, len(env)*2)
 	for _, name := range sortedKeys(env) {
-		flags = append(flags, "-e", name+"="+env[name])
+		flags = append(flags, "-e", name)
 	}
 	return flags
 }
@@ -110,9 +112,19 @@ func (m *Manager) Run(ctx context.Context, spec RunSpec) (string, error) {
 	if err := spec.validate(); err != nil {
 		return "", err
 	}
-	secretEnv, secretFlags, err := m.resolveSecrets(spec.Namespace, spec.SecretEnv)
+	secretEnv, _, err := m.resolveSecrets(spec.Namespace, spec.SecretEnv)
 	if err != nil {
 		return "", err
+	}
+	// Merge literal env and resolved secrets into one subprocess env map;
+	// secrets win on a name clash. Only bare `-e NAME` flags reach argv, so no
+	// value (literal or secret) is ever visible in `ps`/`/proc`.
+	env := make(map[string]string, len(spec.Env)+len(secretEnv))
+	for k, v := range spec.Env {
+		env[k] = v
+	}
+	for k, v := range secretEnv {
+		env[k] = v
 	}
 
 	args := []string{"run"}
@@ -128,14 +140,13 @@ func (m *Manager) Run(ctx context.Context, spec RunSpec) (string, error) {
 	for _, p := range spec.Ports {
 		args = append(args, "-p", p)
 	}
-	args = append(args, literalEnvFlags(spec.Env)...)
-	args = append(args, secretFlags...)
+	args = append(args, bareEnvFlags(env)...)
 	args = append(args, spec.Image)
 	if spec.Command != "" {
 		args = append(args, "sh", "-c", spec.Command)
 	}
 
-	stdout, _, err := m.run(ctx, Invocation{Args: args, Env: secretEnv})
+	stdout, _, err := m.run(ctx, Invocation{Args: args, Env: env})
 	if err != nil {
 		return "", err
 	}

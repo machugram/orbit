@@ -67,15 +67,24 @@ func TestRunBuildsExpectedArgs(t *testing.T) {
 	if id != "abc123" {
 		t.Errorf("container id = %q, want abc123", id)
 	}
-	args := rec.last().Args
+	inv := rec.last()
+	args := inv.Args
 	for _, want := range []string{"run", "-d", "--name", "web", "-p", "8080:80", "nginx:1.27"} {
 		if !argsContain(args, want) {
 			t.Errorf("run args %v missing %q", args, want)
 		}
 	}
-	// Literal env appears inline as NAME=value.
-	if !argsContain(args, "LOG_LEVEL=debug") {
-		t.Errorf("literal env missing from args %v", args)
+	// Literal env reaches docker via a bare `-e NAME` flag with the value in the
+	// subprocess environment — never inline as NAME=value in argv (where `ps`
+	// could read it), matching the secret_env handling.
+	if !argsContain(args, "-e") || !argsContain(args, "LOG_LEVEL") {
+		t.Errorf("literal env flag missing from args %v", args)
+	}
+	if argsContain(args, "LOG_LEVEL=debug") {
+		t.Errorf("literal env value leaked into argv %v", args)
+	}
+	if inv.Env["LOG_LEVEL"] != "debug" {
+		t.Errorf("literal env not injected into subprocess env: %v", inv.Env)
 	}
 }
 

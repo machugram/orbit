@@ -146,8 +146,11 @@ func runFakeCommand(user, command string, ch ssh.Channel) {
 			}
 			time.Sleep(20 * time.Millisecond)
 		}
-	case strings.HasPrefix(command, "run "):
-		data, err := os.ReadFile(unquote(strings.TrimPrefix(command, "run ")))
+	case strings.HasPrefix(command, "run "), strings.HasPrefix(command, "sh "):
+		// "run <path>" / "sh <path>": read the uploaded script and echo it back
+		// (the latter lets tests use a real allowlisted interpreter name).
+		_, path, _ := strings.Cut(command, " ")
+		data, err := os.ReadFile(unquote(path))
 		if err != nil {
 			io.WriteString(ch.Stderr(), err.Error()+"\n")
 			exit(1)

@@ -82,6 +82,15 @@ func (keychainStore) lookup(account string) (string, error) {
 }
 
 func (keychainStore) save(account, pass string) error {
-	return osexec.Command("security", "add-generic-password",
-		"-s", service, "-a", account, "-w", pass).Run()
+	// Pass the secret on stdin, never in argv: `security add-generic-password
+	// -w` (with no value) reads the password from stdin, prompting for it
+	// twice (entry + confirmation). Supplying it as `-w <pass>` would leave the
+	// vault master passphrase visible in `ps`/`/proc` for any local process.
+	cmd := osexec.Command("security", "add-generic-password",
+		"-s", service, "-a", account, "-U", "-w")
+	cmd.Stdin = strings.NewReader(pass + "\n" + pass + "\n")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("%w: %s", err, strings.TrimSpace(string(out)))
+	}
+	return nil
 }

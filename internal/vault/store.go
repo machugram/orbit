@@ -17,10 +17,14 @@ import (
 // newID returns a random 128-bit hex identifier. This matches the crypto/rand
 // approach already used elsewhere (vm.randHex) and avoids an external UUID
 // dependency — 128 random bits give the same collision resistance as UUIDv4.
-func newID() string {
+// An error from the random source is surfaced rather than silently yielding an
+// all-zero (and thus colliding) id.
+func newID() (string, error) {
 	var b [16]byte
-	rand.Read(b[:])
-	return hex.EncodeToString(b[:])
+	if _, err := rand.Read(b[:]); err != nil {
+		return "", fmt.Errorf("vault: generating id: %w", err)
+	}
+	return hex.EncodeToString(b[:]), nil
 }
 
 var (
@@ -200,7 +204,10 @@ func (s *Store) SetCredential(namespace, key string, value []byte, opts ...SetOp
 	).Scan(&id)
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
-		id = newID()
+		id, err = newID()
+		if err != nil {
+			return "", err
+		}
 		_, err = s.db.Exec(
 			`INSERT INTO credentials (id, namespace, key, ciphertext, iv, tag, label, vm_id, created_at)
 			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,

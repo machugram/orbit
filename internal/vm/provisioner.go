@@ -122,9 +122,15 @@ func (p *Provisioner) Create(ctx context.Context, distro, name string, isolated 
 	}
 
 	if err := p.provision(ctx, name, pub); err != nil {
-		// The machine is up but unreachable with our key; tear it down so
-		// it doesn't linger, and revoke the now-useless key.
-		p.vms.Destroy(ctx, name, false)
+		// The machine is up but unreachable with our key; tear it down so it
+		// doesn't linger, and revoke the now-useless key. provision failing
+		// often means ctx is already cancelled/timed-out, which would make
+		// Destroy fail too — so clean up with a fresh, bounded context.
+		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+		defer cancel()
+		if derr := p.vms.Destroy(cleanupCtx, name, false); derr != nil {
+			err = fmt.Errorf("%w (cleanup also failed: %v)", err, derr)
+		}
 		p.keys.Revoke(label)
 		return nil, err
 	}

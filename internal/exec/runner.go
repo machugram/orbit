@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"strings"
+	"sync"
 	"time"
 
 	"golang.org/x/crypto/ssh"
@@ -118,7 +119,15 @@ func (r *Runner) exec(ctx context.Context, vmID, command string, stdin io.Reader
 	if err != nil {
 		return nil, err
 	}
-	defer client.Close()
+	// closeClient is idempotent: both the ctx-cancellation hook and the
+	// deferred teardown call it, but the connection is closed exactly once.
+	var closeOnce sync.Once
+	closeClient := func() { closeOnce.Do(func() { client.Close() }) }
+	// Tear the connection down if ctx ends so session.Run unblocks. stop()
+	// cancels the hook on the normal path so it never runs after we return.
+	stop := context.AfterFunc(ctx, closeClient)
+	defer stop()
+	defer closeClient()
 
 	session, err := client.NewSession()
 	if err != nil {
@@ -132,17 +141,6 @@ func (r *Runner) exec(ctx context.Context, vmID, command string, stdin io.Reader
 	if stdin != nil {
 		session.Stdin = stdin
 	}
-
-	// Tear the connection down if ctx ends so session.Run unblocks.
-	done := make(chan struct{})
-	defer close(done)
-	go func() {
-		select {
-		case <-ctx.Done():
-			client.Close()
-		case <-done:
-		}
-	}()
 
 	res := &Result{VMID: vmID}
 	err = session.Run(command)
@@ -163,17 +161,35 @@ func (r *Runner) exec(ctx context.Context, vmID, command string, stdin io.Reader
 	return res, nil
 }
 
+// allowedInterpreters bounds the exec_script interpreter to a fixed set, so a
+// caller-supplied value cannot smuggle extra arguments or commands into the
+// shell line that runs the uploaded script.
+var allowedInterpreters = map[string]bool{
+	"bash": true, "sh": true, "zsh": true, "dash": true, "ash": true,
+	"python3": true, "python": true, "perl": true, "ruby": true, "node": true,
+}
+
 // ExecScript uploads a script to the VM, runs it with the interpreter
 // (default "bash"), and removes it afterwards (the exec_script MCP tool).
 func (r *Runner) ExecScript(ctx context.Context, vmID, script, interpreter string) (*Result, error) {
 	if interpreter == "" {
 		interpreter = "bash"
 	}
+	if !allowedInterpreters[interpreter] {
+		return nil, fmt.Errorf("exec: unsupported interpreter %q", interpreter)
+	}
 	remote := fmt.Sprintf("/tmp/orbit-%s.script", randToken())
 	if err := r.PushBytes(ctx, vmID, []byte(script), remote, 0o700); err != nil {
 		return nil, err
 	}
-	defer r.Exec(ctx, vmID, "rm -f "+shellQuote(remote)) // best-effort cleanup
+	// Clean up with a context detached from ctx: if the script run was
+	// cancelled or timed out, the cleanup still needs a live context to dial,
+	// otherwise the temp file would linger on the VM.
+	defer func() {
+		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), r.dialTimeout)
+		defer cancel()
+		r.Exec(cleanupCtx, vmID, "rm -f "+shellQuote(remote)) // best-effort cleanup
+	}()
 
 	return r.Exec(ctx, vmID, interpreter+" "+shellQuote(remote))
 }

@@ -5,6 +5,7 @@ package audit
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -60,7 +61,15 @@ func (l *Logger) Log(tool string, detail map[string]any, err error) {
 	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	l.w.Write(append(line, '\n'))
+	// The audit log is a compliance artifact; a dropped or short write must not
+	// pass silently. We can't fail the tool call here, so surface it to stderr
+	// (which never carries secret values — detail is metadata only).
+	line = append(line, '\n')
+	if n, err := l.w.Write(line); err != nil {
+		fmt.Fprintf(os.Stderr, "orbit: audit log write failed for %q: %v\n", tool, err)
+	} else if n < len(line) {
+		fmt.Fprintf(os.Stderr, "orbit: audit log short write for %q: wrote %d of %d bytes\n", tool, n, len(line))
+	}
 }
 
 // Close closes the underlying file.
