@@ -7,8 +7,7 @@ them, and tear them down — with all secrets held in a local encrypted vault.
 macOS + [OrbStack](https://orbstack.dev) only. Not affiliated with other
 projects named Orbit (for example [schmitech/orbit](https://github.com/schmitech/orbit)).
 
-License: [MIT](LICENSE). Security: [SECURITY.md](SECURITY.md).
-Contributing: [CONTRIBUTING.md](CONTRIBUTING.md).
+License: [MIT](LICENSE).
 
 Full design: [ORBIT_SPEC.md](ORBIT_SPEC.md).
 System design + ADRs: [docs/](docs/).
@@ -21,6 +20,31 @@ Performance and feature roadmap: [ROADMAP.md](ROADMAP.md).
 >   (the spec's tmpfile workaround for shelling out to `ssh` is unnecessary)
 > - Argon2id, AES-256-GCM, and Ed25519 are stdlib / `x/crypto` — no native addons
 > - `modernc.org/sqlite` is pure Go, so the result is a single cgo-free binary
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Agent as MCP client
+    participant Orbit
+    participant Vault
+    participant OrbStack
+    participant VM as VM sshd
+
+    Agent->>Orbit: vm_create(distro, name)
+    Orbit->>Vault: generate Ed25519 key (encrypted at rest)
+    Orbit->>OrbStack: orbctl create --isolated
+    OrbStack-->>Orbit: running
+    Orbit->>OrbStack: orb -u root (sshd + authorized_keys)
+    Note over Orbit,Vault: private key never written to disk
+    Orbit-->>Agent: vm_id, key_id, ssh_user
+
+    Agent->>Orbit: exec(vm_id, command)
+    Orbit->>Vault: decrypt signer into memory
+    Orbit->>VM: SSH name.orb.local:22
+    VM-->>Orbit: stdout / stderr
+    Orbit-->>Agent: result (key GC'd)
+```
+
 
 ## Layout
 
@@ -102,7 +126,7 @@ Configuration (all optional):
 - `cred_list` / `key_list` return names and metadata, never values
 - `cred_get` **does** return the secret value to the caller, including the
   model. Prefer `secret_env` on container/compose tools when the value must
-  stay out of the transcript. See [SECURITY.md](SECURITY.md).
+  stay out of the transcript.
 
 **Known limitation — SSH host keys are trust-on-connect.** Orbit does not
 verify a VM's SSH host key (`InsecureIgnoreHostKey`). This is a bounded,
@@ -227,8 +251,6 @@ Nested microVMs are not part of this document; they are still managed with
 the `microvm_*` tools. See [internal/state](internal/state).
 
 ## Development
-
-See [CONTRIBUTING.md](CONTRIBUTING.md) for the full contributor guide.
 
 ```sh
 go test ./...            # unit + integration tests (no OrbStack needed)

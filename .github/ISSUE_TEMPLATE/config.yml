@@ -1,5 +1,0 @@
-blank_issues_enabled: true
-contact_links:
-  - name: Security report
-    url: https://github.com/machugram/orbit/security/advisories/new
-    about: Report an unreleased vulnerability privately. Do not file a public issue.

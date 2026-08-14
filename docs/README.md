@@ -4,7 +4,6 @@
 |---|---|
 | [SYSTEM_DESIGN.md](SYSTEM_DESIGN.md) | Component responsibilities, data flows, security model, concurrency |
 | [../orbit-presentation.html](../orbit-presentation.html) | Recruiter / technical walkthrough (open in a browser) |
-| [../SECURITY.md](../SECURITY.md) | Vulnerability reporting, `cred_get` vs `secret_env`, host-key trust |
 | [adr/ADR-001](adr/ADR-001-go-over-typescript.md) | Why Go instead of TypeScript |
 | [adr/ADR-002](adr/ADR-002-direct-ssh-not-multiplexer.md) | Why direct VM SSH instead of OrbStack's multiplexer |
 | [adr/ADR-003](adr/ADR-003-provisioning-script-not-cloud-init.md) | Why a root script instead of cloud-init |
