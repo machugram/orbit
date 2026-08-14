@@ -12,7 +12,7 @@ import (
 	"strconv"
 	"strings"
 
-	"orbit/internal/vault"
+	"github.com/machugram/orbit/internal/vault"
 )
 
 // Manager runs Docker and Compose commands on OrbStack's engine, resolving

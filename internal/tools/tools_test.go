@@ -11,12 +11,13 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"orbit/internal/audit"
-	"orbit/internal/container"
-	"orbit/internal/exec"
-	"orbit/internal/keys"
-	"orbit/internal/vault"
-	"orbit/internal/vm"
+	"github.com/machugram/orbit/internal/audit"
+	"github.com/machugram/orbit/internal/container"
+	"github.com/machugram/orbit/internal/exec"
+	"github.com/machugram/orbit/internal/keys"
+	"github.com/machugram/orbit/internal/microvm"
+	"github.com/machugram/orbit/internal/vault"
+	"github.com/machugram/orbit/internal/vm"
 )
 
 // fakeOrbctl simulates a healthy orbctl for tool-level tests.
@@ -62,7 +63,13 @@ func startSession(t *testing.T) *mcp.ClientSession {
 		Prov:       vm.NewProvisioner(km, vmm, vm.WithVMExecer(fakeExec)),
 		Runner:     exec.NewRunner(store, km),
 		Containers: container.NewManager(store, container.WithRunner(fakeDocker)),
-		Audit:      audit.NewNop(),
+		MicroVMs: microvm.NewManager(store, km,
+			microvm.WithCarrierRunner(func(context.Context, string, string, ...string) ([]byte, []byte, error) {
+				return nil, nil, nil
+			}),
+			microvm.WithReadyCheck(func(context.Context, string) error { return nil }),
+		),
+		Audit: audit.NewNop(),
 	}
 
 	server := mcp.NewServer(&mcp.Implementation{Name: "orbit-test", Version: "0.0.0"}, nil)
@@ -117,6 +124,8 @@ func TestAllSpecToolsRegistered(t *testing.T) {
 		"container_stop", "container_rm",
 		"compose_up", "compose_down", "compose_logs", "image_build",
 		"compose_ps", "compose_exec", "compose_build",
+		"microvm_create", "microvm_list", "microvm_start", "microvm_stop", "microvm_destroy",
+		"state_plan", "state_apply", "state_destroy",
 	}
 	for _, name := range want {
 		if !got[name] {

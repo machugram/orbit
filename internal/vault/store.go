@@ -67,6 +67,18 @@ CREATE TABLE IF NOT EXISTS vms (
   created_at   INTEGER NOT NULL,
   destroyed_at INTEGER
 );
+
+CREATE TABLE IF NOT EXISTS microvms (
+  id           TEXT PRIMARY KEY,
+  carrier      TEXT NOT NULL,
+  image        TEXT NOT NULL,
+  key_id       TEXT,
+  ssh_port     INTEGER NOT NULL,
+  handle       TEXT,
+  state        TEXT NOT NULL,
+  created_at   INTEGER NOT NULL,
+  destroyed_at INTEGER
+);
 `
 
 // Store is an encrypted credential vault backed by SQLite. All secret
@@ -407,6 +419,88 @@ func (s *Store) SetVMKey(id, keyID string) error {
 	res, err := s.db.Exec(`UPDATE vms SET key_id = ? WHERE id = ?`, keyID, id)
 	if err != nil {
 		return fmt.Errorf("vault: updating vm key: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// CreateMicroVM inserts a nested-guest record in the "creating" state.
+func (s *Store) CreateMicroVM(mv MicroVM) error {
+	_, err := s.db.Exec(
+		`INSERT INTO microvms (id, carrier, image, key_id, ssh_port, handle, state, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		mv.ID, mv.Carrier, mv.Image, nullable(mv.KeyID), mv.SSHPort,
+		nullable(mv.Handle), string(VMCreating), time.Now().Unix(),
+	)
+	if err != nil {
+		return fmt.Errorf("vault: creating microvm record: %w", err)
+	}
+	return nil
+}
+
+// GetMicroVM returns the microVM record with the given id.
+func (s *Store) GetMicroVM(id string) (*MicroVM, error) {
+	var mv MicroVM
+	var state string
+	err := s.db.QueryRow(
+		`SELECT id, carrier, image, COALESCE(key_id, ''), ssh_port, COALESCE(handle, ''),
+		        state, created_at, COALESCE(destroyed_at, 0)
+		 FROM microvms WHERE id = ?`, id,
+	).Scan(&mv.ID, &mv.Carrier, &mv.Image, &mv.KeyID, &mv.SSHPort, &mv.Handle,
+		&state, &mv.CreatedAt, &mv.DestroyedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("vault: reading microvm record: %w", err)
+	}
+	mv.State = VMState(state)
+	return &mv, nil
+}
+
+// ListMicroVMs returns all microVM records, newest first.
+func (s *Store) ListMicroVMs() ([]MicroVM, error) {
+	rows, err := s.db.Query(
+		`SELECT id, carrier, image, COALESCE(key_id, ''), ssh_port, COALESCE(handle, ''),
+		        state, created_at, COALESCE(destroyed_at, 0)
+		 FROM microvms ORDER BY created_at DESC, id`,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("vault: listing microvms: %w", err)
+	}
+	defer rows.Close()
+
+	var out []MicroVM
+	for rows.Next() {
+		var mv MicroVM
+		var state string
+		if err := rows.Scan(&mv.ID, &mv.Carrier, &mv.Image, &mv.KeyID, &mv.SSHPort,
+			&mv.Handle, &state, &mv.CreatedAt, &mv.DestroyedAt); err != nil {
+			return nil, fmt.Errorf("vault: listing microvms: %w", err)
+		}
+		mv.State = VMState(state)
+		out = append(out, mv)
+	}
+	return out, rows.Err()
+}
+
+// SetMicroVMState updates a microVM's lifecycle state, recording destroyed_at
+// on the transition to VMDestroyed.
+func (s *Store) SetMicroVMState(id string, state VMState) error {
+	var res sql.Result
+	var err error
+	if state == VMDestroyed {
+		res, err = s.db.Exec(
+			`UPDATE microvms SET state = ?, destroyed_at = ? WHERE id = ?`,
+			string(state), time.Now().Unix(), id,
+		)
+	} else {
+		res, err = s.db.Exec(`UPDATE microvms SET state = ? WHERE id = ?`, string(state), id)
+	}
+	if err != nil {
+		return fmt.Errorf("vault: updating microvm state: %w", err)
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
 		return ErrNotFound

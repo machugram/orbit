@@ -5,7 +5,9 @@ import (
 	"crypto/rand"
 	"fmt"
 
-	"orbit/internal/vault"
+	"golang.org/x/crypto/ssh"
+
+	"github.com/machugram/orbit/internal/vault"
 )
 
 // Namespace is the vault namespace holding all SSH private keys.
@@ -69,6 +71,17 @@ func (m *Manager) Put(label, vmID string, kp *Keypair) (string, error) {
 		return "", fmt.Errorf("keys: storing private key: %w", err)
 	}
 	return id, nil
+}
+
+// SignerByID loads the keypair for a vault credential ID and returns an
+// ssh.Signer for it. Used by the exec runner and microvm resolver so the
+// key→signer step lives in one place.
+func (m *Manager) SignerByID(id string) (ssh.Signer, error) {
+	kp, err := m.LoadByID(id)
+	if err != nil {
+		return nil, err
+	}
+	return kp.Signer()
 }
 
 // LoadByID decrypts the keypair stored under a vault credential ID (the

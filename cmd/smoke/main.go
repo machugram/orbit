@@ -20,10 +20,10 @@ import (
 	"strings"
 	"time"
 
-	"orbit/internal/exec"
-	"orbit/internal/keys"
-	"orbit/internal/vault"
-	"orbit/internal/vm"
+	"github.com/machugram/orbit/internal/exec"
+	"github.com/machugram/orbit/internal/keys"
+	"github.com/machugram/orbit/internal/vault"
+	"github.com/machugram/orbit/internal/vm"
 )
 
 func main() {

@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"orbit/internal/vault"
+	"github.com/machugram/orbit/internal/vault"
 )
 
 // fakeOrb scripts orbctl behavior and records every invocation.

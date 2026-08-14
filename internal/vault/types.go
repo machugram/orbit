@@ -32,6 +32,22 @@ type VM struct {
 	DestroyedAt int64  // unix seconds, 0 if not destroyed
 }
 
+// MicroVM is a record of a nested QEMU guest running inside a carrier OrbStack
+// machine. It has its own kernel (so eBPF loaded inside it cannot touch the
+// shared OrbStack kernel) and is reached over SSH at <carrier>.orb.local:Port,
+// a port QEMU forwards into the guest. See docs/adr/ADR-012.
+type MicroVM struct {
+	ID          string  // logical name, unique across microVMs
+	Carrier     string  // OrbStack machine hosting the QEMU process
+	Image       string  // image key (e.g. "ubuntu", "alpine")
+	KeyID       string  // credentials.id of the guest's SSH keypair
+	SSHPort     int     // host-forwarded port on the carrier reaching guest:22
+	Handle      string  // on-carrier working directory / control handle
+	State       VMState // reuses the VM lifecycle states
+	CreatedAt   int64   // unix seconds
+	DestroyedAt int64   // unix seconds, 0 if not destroyed
+}
+
 // SetOption customizes a credential written via SetCredential.
 type SetOption func(*setOptions)
 

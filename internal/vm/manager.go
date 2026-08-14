@@ -12,7 +12,7 @@ import (
 	"strings"
 	"time"
 
-	"orbit/internal/vault"
+	"github.com/machugram/orbit/internal/vault"
 )
 
 // Manager wraps the orbctl CLI and mirrors machine state into the vault.

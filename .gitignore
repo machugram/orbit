@@ -1,4 +1,5 @@
-# Compiled binary (built via `go build -o bin/orbit ./cmd/orbit`)
+# Compiled binaries (do not commit)
+/orbit
 /bin/
 
 # Vault, audit log, and any local Orbit state that may be created in-tree

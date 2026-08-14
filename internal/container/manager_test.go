@@ -7,7 +7,7 @@ import (
 	"sync"
 	"testing"
 
-	"orbit/internal/vault"
+	"github.com/machugram/orbit/internal/vault"
 )
 
 // recorder is a fake DockerRunner that captures every invocation and returns

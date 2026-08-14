@@ -5,7 +5,7 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"orbit/internal/container"
+	"github.com/machugram/orbit/internal/container"
 )
 
 type containerRunArgs struct {

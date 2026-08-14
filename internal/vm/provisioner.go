@@ -8,8 +8,8 @@ import (
 	"strings"
 	"time"
 
-	"orbit/internal/keys"
-	"orbit/internal/vault"
+	"github.com/machugram/orbit/internal/keys"
+	"github.com/machugram/orbit/internal/vault"
 )
 
 // VMExecer runs a script as runUser inside an already-created VM, with the

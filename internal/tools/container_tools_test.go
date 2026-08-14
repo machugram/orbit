@@ -9,12 +9,12 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"orbit/internal/audit"
-	"orbit/internal/container"
-	"orbit/internal/exec"
-	"orbit/internal/keys"
-	"orbit/internal/vault"
-	"orbit/internal/vm"
+	"github.com/machugram/orbit/internal/audit"
+	"github.com/machugram/orbit/internal/container"
+	"github.com/machugram/orbit/internal/exec"
+	"github.com/machugram/orbit/internal/keys"
+	"github.com/machugram/orbit/internal/vault"
+	"github.com/machugram/orbit/internal/vm"
 )
 
 // recordingDocker captures every docker invocation so tests can assert on the

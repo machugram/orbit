@@ -40,7 +40,7 @@ This is a local-first, privacy-preserving alternative to E2B, Daytona, Modal, or
 ```
 
 ### 1.1 Orbit MCP Server
-The core process. Exposes MCP tools to the agent. Written in **TypeScript / Node.js** (to match the MCP SDK ecosystem). Runs as a local stdio MCP server.
+The core process. Exposes MCP tools to the agent. Written in **Golang** . Runs as a local stdio MCP server.
 
 ### 1.2 VM Manager
 Wraps `orbctl` and `orb` CLI. Handles:
@@ -208,101 +208,7 @@ The private key exists on disk for < 100ms per invocation.
 
 ## 6. Project Structure
 
-```
-orbit/
-├── package.json
-├── tsconfig.json
-├── README.md
-├── SPEC.md                          ← this file
-│
-├── src/
-│   ├── index.ts                     ← MCP server entrypoint
-│   ├── server.ts                    ← MCP tool registration
-│   │
-│   ├── vm/
-│   │   ├── manager.ts               ← orbctl wrapper
-│   │   ├── provisioner.ts           ← cloud-init builder
-│   │   └── types.ts
-│   │
-│   ├── keys/
-│   │   ├── generator.ts             ← Ed25519 keypair gen
-│   │   └── types.ts
-│   │
-│   ├── vault/
-│   │   ├── store.ts                 ← SQLite + AES-GCM vault
-│   │   ├── crypto.ts                ← Argon2id + AES helpers
-│   │   └── types.ts
-│   │
-│   ├── exec/
-│   │   ├── runner.ts                ← SSH exec via child_process
-│   │   ├── parallel.ts              ← parallel exec across VMs
-│   │   └── types.ts
-│   │
-│   └── tools/                       ← MCP tool definitions (one file per group)
-│       ├── vm-tools.ts
-│       ├── key-tools.ts
-│       ├── exec-tools.ts
-│       └── cred-tools.ts
-│
-├── test/
-│   ├── vault.test.ts
-│   ├── vm.test.ts
-│   └── exec.test.ts
-│
-└── scripts/
-    ├── init-vault.ts                ← first-run vault setup
-    └── smoke-test.ts                ← end-to-end smoke test
-```
 
----
-
-## 7. Dependencies
-
-```json
-{
-  "dependencies": {
-    "@anthropic-ai/sdk": "^0.30.0",         // MCP SDK
-    "@modelcontextprotocol/sdk": "^1.x",    // MCP server
-    "better-sqlite3": "^9.x",               // SQLite vault backend
-    "argon2": "^0.31.x",                    // key derivation
-    "keytar": "^7.x",                       // macOS Keychain (optional master key storage)
-    "node-ssh": "^13.x",                    // SSH client (OR native ssh subprocess)
-    "uuid": "^9.x",                         // IDs
-    "zod": "^3.x"                           // tool input validation
-  },
-  "devDependencies": {
-    "typescript": "^5.x",
-    "tsx": "^4.x",
-    "vitest": "^1.x",
-    "@types/better-sqlite3": "^7.x",
-    "@types/node": "^20.x"
-  }
-}
-```
-
----
-
-## 8. Claude Desktop Config (once built)
-
-```json
-{
-  "mcpServers": {
-    "orbit": {
-      "command": "node",
-      "args": ["/path/to/orbit/dist/index.js"],
-      "env": {
-        "ORBIT_VAULT_PATH": "~/.orbit/vault.db",
-        "ORBIT_LOG_LEVEL": "info"
-      }
-    }
-  }
-}
-```
-
-For Claude Code:
-```bash
-claude mcp add orbit -- node /path/to/orbit/dist/index.js
-```
 
 ---
 
@@ -368,19 +274,6 @@ Agent: vm_destroy(vm_id)
 | Audit trail | All tool calls logged with timestamp to `~/.orbit/audit.log` |
 
 ---
-
-## 11. Phase 1 Build Plan (Claude Code sessions)
-
-| Session | Goal | Deliverable |
-|---------|------|-------------|
-| 1 | Project scaffold + vault | `vault/store.ts`, `vault/crypto.ts`, tests passing |
-| 2 | Key generation | `keys/generator.ts`, key stored + retrieved from vault |
-| 3 | VM manager | `vm/manager.ts`, `orbctl` wrapper, create/destroy working |
-| 4 | Cloud-init provisioner | VM spins up with agent's key, SSH works |
-| 5 | Task runner | `exec/runner.ts`, commands execute, stdout streamed |
-| 6 | MCP server wiring | All tools registered, Claude Desktop can call them |
-| 7 | Parallel exec + file ops | `exec/parallel.ts`, push/pull working |
-| 8 | Polish + smoke test | End-to-end: create VM → run code → destroy |
 
 ---
 

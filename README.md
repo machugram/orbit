@@ -4,8 +4,16 @@ Autonomous agent infrastructure on OrbStack: an MCP server that lets an agent
 generate its own SSH keys, spin up isolated Linux VMs, execute work inside
 them, and tear them down — with all secrets held in a local encrypted vault.
 
-Full design: [ORBIT_SPEC.md](ORBIT_SPEC.md). System design + ADRs:
-[docs/](docs/). Performance and feature roadmap: [ROADMAP.md](ROADMAP.md).
+macOS + [OrbStack](https://orbstack.dev) only. Not affiliated with other
+projects named Orbit (for example [schmitech/orbit](https://github.com/schmitech/orbit)).
+
+License: [MIT](LICENSE). Security: [SECURITY.md](SECURITY.md).
+Contributing: [CONTRIBUTING.md](CONTRIBUTING.md).
+
+Full design: [ORBIT_SPEC.md](ORBIT_SPEC.md).
+System design + ADRs: [docs/](docs/).
+Technical walkthrough (open in a browser): [orbit-presentation.html](orbit-presentation.html).
+Performance and feature roadmap: [ROADMAP.md](ROADMAP.md).
 
 > **Note:** the spec was originally written for TypeScript/Node. This
 > implementation is in **Go**, chosen deliberately:
@@ -24,7 +32,9 @@ internal/keys/       Ed25519 keypair generation + vault-backed key manager
 internal/vm/         orbctl wrapper + provisioner
 internal/exec/       SSH task runner (exec, scripts, SFTP push/pull, parallel)
 internal/container/  Docker + Compose on OrbStack with vault secret injection
-internal/tools/      MCP tool definitions (vm_*, key_*, exec*, file_*, cred_*, container_*, compose_*)
+internal/microvm/    nested QEMU/TCG guests (own kernel) for eBPF and kernel-level work
+internal/state/      declarative desired-state reconciliation over VMs, containers, and compose
+internal/tools/      MCP tool definitions (vm_*, key_*, exec*, file_*, cred_*, container_*, compose_*, microvm_*, state_*)
 internal/audit/      JSONL audit log of every tool call
 internal/keychain/   master passphrase via env or macOS Keychain
 ```
@@ -46,20 +56,17 @@ Orbit is a **macOS + OrbStack** tool by design:
 
 See [INSTALL.md](INSTALL.md) for the full guide. Quick start:
 
-**macOS users:** download from [GitHub Releases](https://github.com/anthropics/orbit/releases)
-or install via Homebrew:
-
-```sh
-brew tap anthropics/orbit
-brew install orbit
-claude mcp add orbit -- $(which orbit)
-```
-
 **Developers:** build locally:
 
 ```sh
 go build -o bin/orbit ./cmd/orbit
 claude mcp add orbit -- $PWD/bin/orbit
+```
+
+Or, once the module is published:
+
+```sh
+go install github.com/machugram/orbit/cmd/orbit@latest
 ```
 
 Configuration (all optional):
@@ -76,7 +83,8 @@ Configuration (all optional):
 - Every secret encrypted with AES-256-GCM under a fresh 12-byte IV
 - A `vault_meta` table stores the salt and an encrypted canary so a wrong
   passphrase is rejected at open time instead of decrypting to garbage
-- `credentials` and `vms` tables follow the schema in spec §3
+- `credentials` and `vms` tables follow the schema in spec §3; a `microvms`
+  table records nested guests (carrier, image, forwarded SSH port, key_id)
 - Public keys are derived from the (decrypted) private key on demand rather
   than stored plaintext — strictly less material on disk than the spec
 
@@ -92,14 +100,17 @@ Configuration (all optional):
   credential.
 - Every tool call is appended to the audit log (no secret values logged)
 - `cred_list` / `key_list` return names and metadata, never values
+- `cred_get` **does** return the secret value to the caller, including the
+  model. Prefer `secret_env` on container/compose tools when the value must
+  stay out of the transcript. See [SECURITY.md](SECURITY.md).
 
 **Known limitation — SSH host keys are trust-on-connect.** Orbit does not
 verify a VM's SSH host key (`InsecureIgnoreHostKey`). This is a bounded,
 deliberate decision: all VM traffic stays on the local machine (loopback via
 `.orb.local`), and an attacker able to MITM loopback already controls the host
-and its vault. Trust-on-first-use (TOFU) pinning is planned (ROADMAP §3) and is
-a prerequisite before any VM is exposed off-loopback. Full reasoning:
-[ADR-011](docs/adr/ADR-011-ssh-host-key-trust-model.md).
+and its vault. Trust-on-first-use (TOFU) pinning is planned and is
+a prerequisite before any VM is exposed off-loopback.
+Full reasoning: [ADR-011](docs/adr/ADR-011-ssh-host-key-trust-model.md).
 
 ## Provisioning (multi-distro)
 
@@ -154,7 +165,70 @@ and the vault key name. See [internal/container](internal/container) and
 > than `orbctl --isolated` VMs. For untrusted code, prefer `vm_create`; for
 > builds, tests, and ephemeral service tasks, containers are faster.
 
+## Nested microVMs (eBPF and kernel-level work)
+
+On Apple Silicon every OrbStack machine — VM or container — shares **one**
+kernel. That is wrong for anything that loads code *into* the kernel: an eBPF
+program loaded inside a machine attaches to the kernel shared by every other
+machine and by OrbStack itself, so it is not contained.
+
+`microvm_create` solves this by booting a **nested QEMU guest with its own
+kernel** inside a carrier VM:
+
+```
+macOS host → OrbStack shared kernel (carrier, --isolated) → QEMU → nested guest kernel
+                                                                     ↑ eBPF runs here, contained
+```
+
+```sh
+# 1. create a carrier VM, 2. boot a nested guest inside it (default: light Alpine)
+vm_create distro=ubuntu name=carrier
+microvm_create carrier=carrier name=bpf-lab
+# 3. drive it with the normal exec/file tools, by microVM name:
+exec_script vm_id=bpf-lab interpreter=bash script="bpftrace -e 'tracepoint:syscalls:sys_enter_execve { printf(\"%s\\n\", comm); }'"
+```
+
+The guest is reached over SSH at `<carrier>.orb.local:<port>` (QEMU forwards a
+carrier-local port into the guest), so `exec`, `exec_script`, `file_push`, and
+`file_pull` all target a microVM by name with no special tooling.
+
+| Tool | Purpose |
+|------|---------|
+| `microvm_create` | boot a nested guest in a carrier (`image`: `alpine` default / `ubuntu`) |
+| `microvm_list` | list nested guests with carrier, image, state |
+| `microvm_start` / `microvm_stop` | reboot from / kill the staged guest |
+| `microvm_destroy` | kill QEMU and remove the guest, optionally purging its key |
+
+> **There is no `/dev/kvm` inside an OrbStack machine, so the guest runs under
+> QEMU TCG (software emulation): correct and fully isolated, but the emulated CPU
+> is slow.** To keep that cheap, the default `alpine` image boots **direct-kernel**
+> (no UEFI, OpenRC not systemd, minirootfs with the agent key baked in) so a boot
+> is tens of seconds and tens of MB. Its stock kernel may lack BTF, so for
+> out-of-the-box CO-RE eBPF (libbpf/bpftrace) use `image=ubuntu`, a full cloud
+> image with a BTF kernel (larger, minutes to boot). The carrier must be a
+> Debian/Ubuntu machine. Full reasoning and the trigger for switching to KVM if
+> it ever becomes available:
+> [ADR-012](docs/adr/ADR-012-nested-microvm-ebpf-isolation.md).
+
+## Desired state
+
+Instead of issuing create/run/destroy calls one resource at a time, the agent
+can declare what should exist as a JSON document and let Orbit converge:
+
+| Tool | Purpose |
+|------|---------|
+| `state_plan` | dry-run: diff desired state against live resources, return the action list |
+| `state_apply` | create missing VMs, run missing containers, bring up missing compose stacks; already-running resources are left untouched |
+| `state_destroy` | tear down only the resources named in the document (VMs purge their keys) |
+
+The document has three arrays — `vms` (name + distro), `containers` (image,
+optional name/ports/env), `composes` (project + file path or inline YAML).
+Nested microVMs are not part of this document; they are still managed with
+the `microvm_*` tools. See [internal/state](internal/state).
+
 ## Development
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the full contributor guide.
 
 ```sh
 go test ./...            # unit + integration tests (no OrbStack needed)
@@ -171,11 +245,14 @@ through Docker to verify vault secret injection end-to-end.
 
 | Session | Goal | Status |
 |---------|------|--------|
-| 1 | Project scaffold + vault | ✅ done |
-| 2 | Key generation | ✅ done |
-| 3 | VM manager | ✅ done |
-| 4 | Cloud-init provisioner | ✅ done |
-| 5 | Task runner | ✅ done |
-| 6 | MCP server wiring | ✅ done |
-| 7 | Parallel exec + file ops | ✅ done |
-| 8 | Polish + smoke test | ✅ done |
+| 1 | Project scaffold + vault | done |
+| 2 | Key generation | done |
+| 3 | VM manager | done |
+| 4 | Cloud-init provisioner | done |
+| 5 | Task runner | done |
+| 6 | MCP server wiring | done |
+| 7 | Parallel exec + file ops | done |
+| 8 | Polish + smoke test | done |
+| 9 | Container + compose tools | done |
+| 10 | Nested microVMs | done |
+| 11 | Desired-state reconciliation | done |

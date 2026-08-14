@@ -11,13 +11,21 @@ import (
 
 	"golang.org/x/crypto/ssh"
 
-	"orbit/internal/keys"
-	"orbit/internal/vault"
+	"github.com/machugram/orbit/internal/keys"
+	"github.com/machugram/orbit/internal/vault"
 )
 
 // testEnv wires a vault, key manager, fake SSH server, and runner with the
 // given VMs registered (each with its own keypair, authorized on the server).
 func testEnv(t *testing.T, vmIDs ...string) *Runner {
+	t.Helper()
+	r, _, _ := testEnvFull(t, vmIDs...)
+	return r
+}
+
+// testEnvFull is testEnv but also returns the backing store and key manager for
+// tests that need to mutate vault state directly.
+func testEnvFull(t *testing.T, vmIDs ...string) (*Runner, *vault.Store, *keys.Manager) {
 	t.Helper()
 
 	s, err := vault.Open(filepath.Join(t.TempDir(), "vault.db"), []byte("pw"))
@@ -52,9 +60,10 @@ func testEnv(t *testing.T, vmIDs ...string) *Runner {
 	addr := startSSHServer(t, authorized)
 	// Route every VM to the test server, keeping per-VM users so tests
 	// can tell connections apart (mirrors one-sshd-per-VM in production).
-	return NewRunner(s, km, WithTarget(func(vmID string) (string, string) {
+	r := NewRunner(s, km, WithTarget(func(vmID string) (string, string) {
 		return addr, "agent@" + vmID
 	}))
+	return r, s, km
 }
 
 func TestExecCapturesStdout(t *testing.T) {
@@ -123,8 +132,8 @@ func TestExecRequiresKnownLiveVM(t *testing.T) {
 	}
 
 	// Destroyed VMs are refused before any dial.
-	env := testEnv(t, "dead")
-	if err := envStore(t, env, "dead"); err != nil {
+	env, st, _ := testEnvFull(t, "dead")
+	if err := st.SetVMState("dead", vault.VMDestroyed); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := env.Exec(ctx, "dead", "echo x"); err == nil || !strings.Contains(err.Error(), "destroyed") {
@@ -132,16 +141,10 @@ func TestExecRequiresKnownLiveVM(t *testing.T) {
 	}
 }
 
-// envStore marks a VM destroyed through the runner's own store reference.
-func envStore(t *testing.T, r *Runner, vmID string) error {
-	t.Helper()
-	return r.store.SetVMState(vmID, vault.VMDestroyed)
-}
-
 func TestWrongKeyIsRejected(t *testing.T) {
-	r := testEnv(t, "vm1")
+	r, _, km := testEnvFull(t, "vm1")
 	// Replace vm1's key after the server learned the original public key.
-	if _, _, err := r.keys.Generate("vm-vm1", "vm1"); err != nil {
+	if _, _, err := km.Generate("vm-vm1", "vm1"); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := r.Exec(context.Background(), "vm1", "echo x"); err == nil {

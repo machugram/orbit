@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"orbit/internal/vault"
+	"github.com/machugram/orbit/internal/vault"
 )
 
 // TestE2ERealDocker exercises the real `docker` CLI: it stores a secret in the

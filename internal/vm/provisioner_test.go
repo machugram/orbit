@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"orbit/internal/keys"
-	"orbit/internal/vault"
+	"github.com/machugram/orbit/internal/keys"
+	"github.com/machugram/orbit/internal/vault"
 )
 
 type execCall struct {

@@ -1,4 +1,4 @@
-module orbit
+module github.com/machugram/orbit
 
 go 1.25.0
 

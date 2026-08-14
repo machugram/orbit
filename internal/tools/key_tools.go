@@ -7,8 +7,8 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"orbit/internal/keys"
-	"orbit/internal/vm"
+	"github.com/machugram/orbit/internal/keys"
+	"github.com/machugram/orbit/internal/vm"
 )
 
 type keyGenerateArgs struct {

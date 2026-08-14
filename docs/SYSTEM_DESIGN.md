@@ -3,9 +3,10 @@
 ## Overview
 
 Orbit is a single-binary MCP server that gives an AI agent the ability to
-create isolated Linux VMs on OrbStack, execute work inside them over SSH, and
-store all secrets in a local encrypted vault — with every tool call appended
-to an append-only audit log.
+create isolated Linux VMs on OrbStack, run containers and compose stacks,
+boot nested microVMs for kernel-level work, reconcile a declared desired
+state, execute work over SSH, and store all secrets in a local encrypted
+vault — with every tool call appended to an append-only audit log.
 
 The design goal is **minimal attack surface with maximum agent autonomy**: the
 agent controls the entire VM lifecycle without ever seeing a raw private key
@@ -19,20 +20,19 @@ or needing network access beyond the local OrbStack socket.
 Claude Agent (MCP client)
         │  stdio JSON-RPC (go-sdk StdioTransport)
         ▼
-┌──────────────────────────────────────────────────────────┐
-│  orbit binary  (cmd/orbit)                                │
-│  ┌────────┬────────┬───────┬───────┬────────────────────┐ │
-│  │  vm_*  │ key_*  │exec_* │cred_* │ container_*/compose_*│ │
-│  │ tools  │ tools  │file_* │ tools │ image_build          │ │
-│  └───┬────┴───┬────┴───┬───┴───┬───┴──────────┬───────────┘ │
-│      │        │        │       │              │             │
-│ vm.Manager vault+keys exec.  (vault)   container.Manager    │
-│ Provisioner          Runner            audit (cross-cutting)│
-└──────┬────────┬────────┬───────────────────┬────────────────┘
-       │        │        │                   │
-  orbctl CLI  SQLite   SSH to            docker /
-  orb -u root vault.db <vm>.orb.local:22 docker compose
-  (OrbStack)  (disk)   (in-VM sshd)      (OrbStack engine)
+┌─────────────────────────────────────────────────────────────────┐
+│  orbit binary  (cmd/orbit)                                       │
+│  vm_*  key_*  exec_*/file_*  cred_*  container_*/compose_*       │
+│  microvm_*  state_*  image_build                                 │
+│                                                                  │
+│  vm.Manager + Provisioner   vault + keys   exec.Runner           │
+│  container.Manager          microvm.Manager   state.Reconciler   │
+│  audit (cross-cutting)                                           │
+└──────┬──────────────┬────────────┬──────────────┬───────────────┘
+       │              │            │              │
+  orbctl / orb    SQLite       SSH to         docker /
+  (OrbStack)      vault.db     <vm>.orb.local:22  compose
+                               or <carrier>.orb.local:<port>
 ```
 
 ---
@@ -47,9 +47,10 @@ written to disk. A `vault_meta` canary row verifies the passphrase at open
 time so a wrong passphrase is rejected immediately rather than silently
 decrypting to garbage.
 
-Schema: three tables — `vault_meta` (salt + canary), `credentials` (arbitrary
+Schema: four tables — `vault_meta` (salt + canary), `credentials` (arbitrary
 secrets keyed by namespace+key), `vms` (VM records with state and key_id
-foreign key).
+foreign key), `microvms` (nested guests: carrier, image, forwarded SSH port,
+key_id).
 
 ### `internal/keys`
 Ed25519 keypair generation and vault-backed key manager. Private keys are
@@ -73,8 +74,13 @@ system at runtime — it covers apt, dnf, yum, zypper, pacman, apk, xbps and
 systemd, OpenRC, runit.
 
 ### `internal/exec`
-SSH task runner. Connects directly to `<vm>.orb.local:22` (not OrbStack's
-multiplexer) using the per-VM Ed25519 key decrypted from the vault. Exposes:
+SSH task runner. How an id maps to an endpoint and key is delegated to an
+`exec.Resolver`. Production wiring chains `microvm.NewResolver` in front of
+the vault resolver, so the same `exec` / `exec_script` / `file_*` tools drive
+both OrbStack VMs (`<vm>.orb.local:22`) and nested guests
+(`<carrier>.orb.local:<port>`) by name. Connections use the per-target
+Ed25519 key decrypted from the vault — never OrbStack's multiplexer.
+Exposes:
 
 - `Exec` — single command, returns stdout/stderr/exit code
 - `ExecScript` — push a script, execute it, delete it (3 connections today;
@@ -109,6 +115,28 @@ ADR-008). `ComposeExec` resolves a service's running container via `ComposePs`
 and reuses the plain `docker exec` path, avoiding a stdin conflict with the
 inline-YAML approach (see ADR-006). Credential IDs use `crypto/rand` hex via
 `newID()`, keeping the module's direct dependency list minimal (see ADR-007).
+
+### `internal/microvm`
+Nested QEMU/TCG guests running inside a carrier OrbStack VM, each with its
+**own kernel** so eBPF and other kernel-level work cannot touch the shared
+OrbStack kernel (see ADR-012). `Manager` stages an image on the carrier
+(default `alpine` direct-kernel; opt-in `ubuntu` cloud image), boots QEMU,
+and records the guest in the vault `microvms` table. The carrier must be a
+Debian/Ubuntu machine. There is no `/dev/kvm` inside OrbStack, so the guest
+is software-emulated and slow; that is accepted.
+
+A `microvm.Resolver` maps a microVM id to `<carrier>.orb.local:<ssh_port>`
+and the guest's vault-held key, falling through to the vault VM resolver for
+everything else.
+
+### `internal/state`
+Declarative desired-state reconciliation over the imperative VM and
+container primitives. A JSON document lists `vms`, `containers`, and
+`composes`; `Reconciler.Plan` diffs that against live resources,
+`Apply` creates/runs/ups what is missing (never deleting unlisted
+resources), and `Destroy` tears down only what the document names.
+Nested microVMs are out of scope for this document — they stay on the
+`microvm_*` tools.
 
 ### `internal/audit`
 Append-only JSONL log at `~/.orbit/audit.log`. Every tool call is written
@@ -160,15 +188,18 @@ audit: {"tool":"vm_create","detail":{"name":"worker-1","distro":"alpine"},"ok":t
 agent calls exec(vm_id="worker-1", command="uname -a")
   │
   ├─ exec.Runner.Exec()
-  │    ├─ vault.GetVM("worker-1")       → get key_id
-  │    ├─ keys.LoadByID(key_id)         → decrypt Ed25519 private key into memory
-  │    ├─ TCP dial worker-1.orb.local:22 (15s timeout)
-  │    ├─ SSH handshake (key in memory, never touches disk)
+  │    ├─ resolver.Resolve("worker-1")
+  │    │    ├─ microvm.Resolver: not a microVM → chain to vault resolver
+  │    │    └─ vaultResolver: GetVM → SignerByID → worker-1.orb.local:22
+  │    ├─ TCP dial + SSH handshake (key in memory, never touches disk)
   │    ├─ session.Run("uname -a")
   │    └─ return stdout/stderr/exit_code
   │
   └─ key material GC'd when *ssh.Client goes out of scope
 ```
+
+A microVM id takes the other branch: `GetMicroVM("bpf-lab")` → guest key →
+`<carrier>.orb.local:<ssh_port>`. Same runner, no extra tools.
 
 ## Data Flow: `container_run` with secret injection
 
@@ -197,6 +228,24 @@ The secret value exists only in the vault (encrypted at rest) and transiently
 in the docker subprocess's environment. It is never in a tool argument, a
 result, argv (`ps`), or the audit log.
 
+## Data Flow: `state_apply`
+
+```
+agent calls state_apply(state={vms:[{name:"w1",distro:"alpine"}], ...})
+  │
+  ├─ state.ParseState()  → validate names, distros, compose file-or-yaml
+  ├─ Reconciler.diff()   → list live VMs/containers; emit create/run/up or noop
+  └─ Reconciler.execute()
+       ├─ missing VM        → Provisioner.Create (same path as vm_create)
+       ├─ missing container → container.Manager.Run
+       ├─ compose project   → container.Manager.ComposeUp
+       └─ already present   → noop
+```
+
+`state_plan` is the same diff with no execute. `state_destroy` diffs in
+destroy mode and only touches resources named in the document (VMs are
+destroyed with `purge_keys=true`).
+
 ---
 
 ## Security Model
@@ -209,7 +258,8 @@ result, argv (`ps`), or the audit log.
 | Keys in memory | Ed25519 private keys decrypted per SSH dial, never written to disk |
 | VM isolation | `orbctl create --isolated` disables macOS file-sharing mounts |
 | Audit trail | Every tool call logged; secret values structurally excluded |
-| No SSH multiplexer | Direct `<vm>.orb.local:22` preserves per-VM credential isolation |
+| No SSH multiplexer | Direct `<vm>.orb.local:22` (or `<carrier>.orb.local:<port>` for microVMs) preserves per-target credential isolation |
+| Nested kernel isolation | microVM guests run under QEMU TCG with their own kernel; eBPF cannot reach the shared OrbStack kernel (ADR-012) |
 | Container secret injection | `secret_env` → bare `docker -e NAME`; value in subprocess env only, never argv/model/audit |
 | Passphrase bootstrap | macOS Keychain or env var; auto-generated 32-byte hex on first run |
 
@@ -223,11 +273,13 @@ All external dependencies are injectable for testing without OrbStack:
 |---|---|---|
 | `vm.CmdRunner` | `orbctl` subprocess | `fakeOrbctl` func |
 | `vm.VMExecer` | `orb -u root sh -s` | `fakeExecer` struct |
-| `exec.TargetResolver` | `<vmID>.orb.local:22` | custom func |
+| `exec.Resolver` | microVM resolver chained to vault resolver (`<vm>.orb.local:22`) | custom `Resolver` / `WithTarget` |
 | `container.DockerRunner` | `docker` subprocess | `recorder` struct |
 
 Unit and integration tests run with no OrbStack dependency. Only
-`cmd/smoke` touches a real OrbStack instance.
+`cmd/smoke` touches a real OrbStack instance;
+`ORBIT_DOCKER_E2E=1 go test ./internal/container/` is the opt-in real-Docker
+path for vault secret injection.
 
 ---
 

@@ -1,15 +1,32 @@
 # Installing Orbit
 
-Orbit is distributed as pre-built binaries for macOS (arm64 and x86_64) and via Homebrew.
-
 **Requirements:**
 - macOS (Sonoma or later recommended)
 - [OrbStack](https://orbstack.dev) installed and running
-- [Claude Desktop](https://claude.ai/download) or VS Code with Claude extension
+- [Go 1.25+](https://go.dev/dl/) to build, or a pre-built binary
+- An MCP client such as [Claude Code](https://docs.anthropic.com/en/docs/claude-code), Claude Desktop, or VS Code with the Claude extension
 
-## Option 1: GitHub Release (Direct Binary)
+Until a GitHub Release exists, **build from source**.
 
-1. Go to [GitHub Releases](https://github.com/anthropics/orbit/releases) and download the binary for your architecture:
+## Option 1: Build from source (recommended)
+
+```sh
+git clone https://github.com/machugram/orbit.git
+cd orbit
+go build -o bin/orbit ./cmd/orbit
+claude mcp add orbit -- $PWD/bin/orbit
+```
+
+Or, once the module is available:
+
+```sh
+go install github.com/machugram/orbit/cmd/orbit@latest
+claude mcp add orbit -- $(go env GOPATH)/bin/orbit
+```
+
+## Option 2: GitHub Release (Direct Binary)
+
+1. Go to [GitHub Releases](https://github.com/machugram/orbit/releases) and download the binary for your architecture:
    - **Apple Silicon (M1/M2/M3):** `orbit-aarch64-apple-darwin`
    - **Intel Mac:** `orbit-x86_64-apple-darwin`
 
@@ -26,12 +43,16 @@ Orbit is distributed as pre-built binaries for macOS (arm64 and x86_64) and via 
 
 4. Restart Claude Desktop or your editor. Orbit should appear in the MCP servers list.
 
-## Option 2: Homebrew
+## Option 3: Homebrew
+
+The in-tree [Formula/orbit.rb](Formula/orbit.rb) is a **template**. It is not
+installable until a release is cut and the SHA256 placeholders are replaced
+(see [RELEASE.md](RELEASE.md)). Until then, use Option 1.
 
 Once the formula is published to a tap:
 
 ```sh
-brew tap anthropics/orbit
+brew tap machugram/orbit
 brew install orbit
 ```
 
@@ -73,8 +94,13 @@ If Orbit fails to start, check:
 
 ## Updating
 
+**From source:**
+```sh
+git pull && go build -o bin/orbit ./cmd/orbit
+```
+
 **Via GitHub Release:**
-- Download the latest binary from [Releases](https://github.com/anthropics/orbit/releases) and replace the old one.
+- Download the latest binary from [Releases](https://github.com/machugram/orbit/releases) and replace the old one.
 
 **Via Homebrew:**
 ```sh

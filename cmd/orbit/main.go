@@ -20,14 +20,15 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"orbit/internal/audit"
-	"orbit/internal/container"
-	"orbit/internal/exec"
-	"orbit/internal/keychain"
-	"orbit/internal/keys"
-	"orbit/internal/tools"
-	"orbit/internal/vault"
-	"orbit/internal/vm"
+	"github.com/machugram/orbit/internal/audit"
+	"github.com/machugram/orbit/internal/container"
+	"github.com/machugram/orbit/internal/exec"
+	"github.com/machugram/orbit/internal/keychain"
+	"github.com/machugram/orbit/internal/keys"
+	"github.com/machugram/orbit/internal/microvm"
+	"github.com/machugram/orbit/internal/tools"
+	"github.com/machugram/orbit/internal/vault"
+	"github.com/machugram/orbit/internal/vm"
 )
 
 const version = "0.1.0"
@@ -75,13 +76,18 @@ func run() error {
 
 	km := keys.NewManager(store)
 	vmm := vm.NewManager(store)
+	// One Runner drives both plain VMs and nested microVMs: the microvm
+	// resolver handles microVM ids and chains to the vault resolver for the
+	// rest, so exec/exec_script/file_* work against either by name.
+	resolver := microvm.NewResolver(store, km, exec.VaultResolver(store, km))
 	deps := &tools.Deps{
 		Vault:      store,
 		Keys:       km,
 		VMs:        vmm,
 		Prov:       vm.NewProvisioner(km, vmm),
-		Runner:     exec.NewRunner(store, km),
+		Runner:     exec.NewRunnerWithResolver(resolver),
 		Containers: container.NewManager(store),
+		MicroVMs:   microvm.NewManager(store, km),
 		Audit:      auditLog,
 	}
 

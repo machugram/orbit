@@ -29,6 +29,17 @@ func (k *Keypair) PrivatePEM() ([]byte, error) {
 	return pem.EncodeToMemory(block), nil
 }
 
+// Signer returns an ssh.Signer for the keypair, for SSH client auth. The
+// private key stays in memory; callers should let it go out of scope when the
+// connection closes.
+func (k *Keypair) Signer() (ssh.Signer, error) {
+	signer, err := ssh.NewSignerFromKey(k.Private)
+	if err != nil {
+		return nil, fmt.Errorf("keys: building signer: %w", err)
+	}
+	return signer, nil
+}
+
 // AuthorizedKey returns the public key as a single authorized_keys line:
 // "ssh-ed25519 AAAA... comment". Safe to share and to inject via cloud-init.
 func (k *Keypair) AuthorizedKey() (string, error) {

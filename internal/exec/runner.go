@@ -13,8 +13,8 @@ import (
 
 	"golang.org/x/crypto/ssh"
 
-	"orbit/internal/keys"
-	"orbit/internal/vault"
+	"github.com/machugram/orbit/internal/keys"
+	"github.com/machugram/orbit/internal/vault"
 )
 
 // TargetResolver maps a VM id to the SSH endpoint and user to connect as.
@@ -25,84 +25,137 @@ func defaultTarget(vmID string) (addr, user string) {
 	return vmID + ".orb.local:22", "agent"
 }
 
-// Runner executes commands on VMs over SSH using vault-held keys.
+// ConnInfo is everything needed to open one SSH session to a target. Signer
+// holds a private key decrypted into memory only for the connection's lifetime.
+type ConnInfo struct {
+	Addr   string
+	User   string
+	Signer ssh.Signer
+}
+
+// Resolver yields connection info for a target id. The default implementation
+// resolves agent-managed VMs from the vault; other implementations (e.g. the
+// microvm package) can map an id to a nested guest reachable through a carrier,
+// so the same Runner drives both without duplicating the SSH plumbing.
+type Resolver interface {
+	Resolve(ctx context.Context, id string) (ConnInfo, error)
+}
+
+// Runner executes commands on a target over SSH. How an id maps to an endpoint
+// and key is delegated to a Resolver.
 type Runner struct {
-	store       *vault.Store
-	keys        *keys.Manager
-	resolve     TargetResolver
+	resolver    Resolver
 	dialTimeout time.Duration
 }
 
 // RunnerOption customizes a Runner.
-type RunnerOption func(*Runner)
+type RunnerOption func(*runnerConfig)
+
+type runnerConfig struct {
+	target      TargetResolver
+	dialTimeout time.Duration
+}
 
 // WithTarget overrides how VM ids resolve to SSH endpoints (used by tests
-// and non-default network setups).
+// and non-default network setups). Only affects the default vault resolver.
 func WithTarget(f TargetResolver) RunnerOption {
-	return func(r *Runner) { r.resolve = f }
+	return func(c *runnerConfig) { c.target = f }
+}
+
+// WithDialTimeout overrides the TCP+handshake timeout.
+func WithDialTimeout(d time.Duration) RunnerOption {
+	return func(c *runnerConfig) { c.dialTimeout = d }
 }
 
 // NewRunner returns a Runner that connects to each VM's own sshd at
-// <vm>.orb.local:22 as the "agent" user.
+// <vm>.orb.local:22 as the "agent" user, authenticating with the VM's
+// vault-held key.
 func NewRunner(store *vault.Store, km *keys.Manager, opts ...RunnerOption) *Runner {
-	r := &Runner{
-		store:       store,
-		keys:        km,
-		resolve:     defaultTarget,
-		dialTimeout: DefaultDialTimeout,
+	cfg := newRunnerConfig(opts)
+	return &Runner{
+		resolver:    &vaultResolver{store: store, keys: km, target: cfg.target},
+		dialTimeout: cfg.dialTimeout,
 	}
-	for _, opt := range opts {
-		opt(r)
-	}
-	return r
 }
 
-// connect dials the VM's sshd and authenticates with the VM's vault-held
-// key. The decrypted private key exists only in this process's memory for
-// the lifetime of the connection.
-func (r *Runner) connect(ctx context.Context, vmID string) (*ssh.Client, error) {
-	rec, err := r.store.GetVM(vmID)
+// NewRunnerWithResolver returns a Runner backed by a custom Resolver. Used to
+// drive targets that are not plain vault VMs (e.g. nested microVMs).
+func NewRunnerWithResolver(resolver Resolver, opts ...RunnerOption) *Runner {
+	cfg := newRunnerConfig(opts)
+	return &Runner{resolver: resolver, dialTimeout: cfg.dialTimeout}
+}
+
+func newRunnerConfig(opts []RunnerOption) runnerConfig {
+	cfg := runnerConfig{target: defaultTarget, dialTimeout: DefaultDialTimeout}
+	for _, opt := range opts {
+		opt(&cfg)
+	}
+	return cfg
+}
+
+// VaultResolver returns the default Resolver: it looks up an agent-managed VM
+// in the vault and reaches it at <vm>.orb.local:22. Exposed so other resolvers
+// can chain to it as a fallback.
+func VaultResolver(store *vault.Store, km *keys.Manager, opts ...RunnerOption) Resolver {
+	cfg := newRunnerConfig(opts)
+	return &vaultResolver{store: store, keys: km, target: cfg.target}
+}
+
+// vaultResolver maps a VM id to its vault-held key and OrbStack endpoint.
+type vaultResolver struct {
+	store  *vault.Store
+	keys   *keys.Manager
+	target TargetResolver
+}
+
+func (vr *vaultResolver) Resolve(ctx context.Context, vmID string) (ConnInfo, error) {
+	rec, err := vr.store.GetVM(vmID)
 	if err != nil {
-		return nil, err
+		return ConnInfo{}, err
 	}
 	if rec.State == vault.VMDestroyed {
-		return nil, fmt.Errorf("exec: vm %s is destroyed", vmID)
+		return ConnInfo{}, fmt.Errorf("exec: vm %s is destroyed", vmID)
 	}
 	if rec.KeyID == "" {
-		return nil, fmt.Errorf("exec: vm %s has no associated key", vmID)
+		return ConnInfo{}, fmt.Errorf("exec: vm %s has no associated key", vmID)
 	}
-	kp, err := r.keys.LoadByID(rec.KeyID)
+	signer, err := vr.keys.SignerByID(rec.KeyID)
+	if err != nil {
+		return ConnInfo{}, err
+	}
+	addr, user := vr.target(vmID)
+	return ConnInfo{Addr: addr, User: user, Signer: signer}, nil
+}
+
+// connect resolves the target and dials its sshd. The decrypted private key
+// exists only in this process's memory for the lifetime of the connection.
+func (r *Runner) connect(ctx context.Context, vmID string) (*ssh.Client, error) {
+	info, err := r.resolver.Resolve(ctx, vmID)
 	if err != nil {
 		return nil, err
 	}
-	signer, err := ssh.NewSignerFromKey(kp.Private)
-	if err != nil {
-		return nil, fmt.Errorf("exec: building signer: %w", err)
-	}
-
-	addr, user := r.resolve(vmID)
 	cfg := &ssh.ClientConfig{
-		User: user,
-		Auth: []ssh.AuthMethod{ssh.PublicKeys(signer)},
-		// The VM's host key is generated at first boot and not
-		// pre-distributed; all traffic stays on the local machine
-		// (loopback via .orb.local), so trust-on-connect is acceptable.
-		// This is a bounded, documented decision — see
+		User: info.User,
+		Auth: []ssh.AuthMethod{ssh.PublicKeys(info.Signer)},
+		// The host key is generated at first boot and not pre-distributed; all
+		// traffic stays on the local machine (loopback via .orb.local, or a
+		// carrier-local port for microVMs), so trust-on-connect is acceptable.
+		// Bounded, documented decision — see
 		// docs/adr/ADR-011-ssh-host-key-trust-model.md. TOFU pinning is
-		// ROADMAP §3, required before any VM is reachable off-loopback.
+		// ROADMAP §3, required before any target is reachable off-loopback.
 		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
 		Timeout:         r.dialTimeout,
 	}
 
 	d := net.Dialer{Timeout: r.dialTimeout}
-	conn, err := d.DialContext(ctx, "tcp", addr)
+	conn, err := d.DialContext(ctx, "tcp", info.Addr)
 	if err != nil {
-		return nil, fmt.Errorf("exec: dialing %s: %w", addr, err)
+		return nil, fmt.Errorf("exec: dialing %s: %w", info.Addr, err)
 	}
-	c, chans, reqs, err := ssh.NewClientConn(conn, addr, cfg)
+	c, chans, reqs, err := ssh.NewClientConn(conn, info.Addr, cfg)
 	if err != nil {
 		conn.Close()
-		return nil, fmt.Errorf("exec: ssh handshake with %s as %s: %w", addr, user, err)
+		return nil, fmt.Errorf("exec: ssh handshake with %s as %s: %w", info.Addr, info.User, err)
 	}
 	return ssh.NewClient(c, chans, reqs), nil
 }

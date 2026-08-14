@@ -1,14 +1,5 @@
 # Orbit — Performance & Feature Roadmap
 
-Concrete, code-grounded improvements beyond the working Phase-1 build. Items
-are ordered by impact within each section, with rough effort (S/M/L) and the
-relevant source location. This extends spec §12 ("Open Questions / Future
-Work") with what surfaced during implementation.
-
-Legend: **S** ≈ hours · **M** ≈ a day · **L** ≈ multi-day.
-
----
-
 ## 1. Performance
 
 ### 1.1 Cache a provisioned base image (biggest win) — L
@@ -22,10 +13,10 @@ Provision one base machine per distro once, then clone it for subsequent
 creates so the package step is skipped. Approaches, in order of preference:
 - **Clone from a warm base VM** — keep a `orbit-base-<distro>` machine
   provisioned and cloned on demand (sub-second vs ~30–60s).
-- **Snapshot/restore** once OrbStack exposes it in the CLI (see §2.2).
+- **Snapshot/restore** once OrbStack exposes it in the CLI.
 
 Expected effect: `vm_create` cold start drops from ~30–60s to a few seconds.
-This is also the prerequisite for the spec's "~60s lifecycle" claim (§9.1) to
+This is also the prerequisite for the spec's "~60s lifecycle" claim to
 hold across distros, not just cached-image Ubuntu.
 
 ### 1.2 SSH connection reuse / pooling — M
@@ -47,7 +38,7 @@ cancellation, and eviction on `vm_stop`/`vm_destroy`.
 Today it connects three times: `PushBytes` (upload), `Exec` (run), and a
 deferred `Exec` (`rm`). Collapse to **one** connection: open a single client,
 SFTP the script, run it, and remove it — all over the same session/client.
-Naturally falls out of §1.2 but is worth doing standalone. Cuts `exec_script`
+Naturally falls out of but is worth doing standalone. Cuts `exec_script`
 latency ~3×.
 
 ### 1.4 Stream `file_pull` instead of buffering in memory — S
@@ -84,7 +75,7 @@ poll shared across concurrent creates.
 We use `modernc.org/sqlite` (pure Go) for a single cgo-free binary. It is
 slower than the cgo `mattn`/`better-sqlite3` driver. For a credential store
 (low write volume, tiny rows) this is irrelevant, but if the `cred_*` tools
-ever become a high-throughput general secret store (§2.7), benchmark both.
+ever become a high-throughput general secret store (2.7), benchmark both.
 Argon2id derivation (~0.3–0.7s) is paid once at server start by design — do
 **not** cache the derived key to disk.
 
@@ -95,7 +86,7 @@ Argon2id derivation (~0.3–0.7s) is paid once at server start by design — do
 ### 2.1 Ephemeral VMs with idle TTL / auto-destroy — M
 **Where:** new `internal/vm` reaper + `vms` table (already has `created_at`)
 
-Spec §12 + §9.1. Let `vm_create` mark a VM ephemeral with a TTL; a background
+Spec 12 + 9.1. Let `vm_create` mark a VM ephemeral with a TTL; a background
 reaper destroys VMs idle past the deadline and purges their keys. Track
 `last_used_at` (update on every `exec`). Prevents sandbox VMs from leaking when
 an agent forgets to call `vm_destroy`.
@@ -103,9 +94,9 @@ an agent forgets to call `vm_destroy`.
 ### 2.2 `vm_snapshot` — M
 **Where:** new tool in [internal/tools/vm_tools.go](internal/tools/vm_tools.go)
 
-Listed in spec §2 as future. Snapshot/restore VM state by tag. Gated on
+Listed in spec  as future. Snapshot/restore VM state by tag. Gated on
 OrbStack CLI support (verify `orbctl` exposes it in the installed version);
-until then, implement via clone-of-stopped-VM. Pairs with §1.1.
+until then, implement via clone-of-stopped-VM. Pairs with 1.1.
 
 ### 2.3 Expose resource limits & network isolation in `vm_create` — S
 **Where:** `CreateSpec` in [internal/vm/types.go](internal/vm/types.go), `vm_create` args in [internal/tools/vm_tools.go](internal/tools/vm_tools.go)
@@ -130,7 +121,7 @@ runner) is unchanged.
 ### 2.5 `key_promote` — export a key to `~/.ssh` — S
 **Where:** new tool in [internal/tools/key_tools.go](internal/tools/key_tools.go), [internal/keys](internal/keys)
 
-Spec §1.3/§3 explicitly anticipate keys being "promoted by the user" out of
+Spec 1.3/3 explicitly anticipate keys being "promoted by the user" out of
 the vault. Add an opt-in tool that writes a stored private key to `~/.ssh/`
 with `0600` and prints the suggested `ssh`/config snippet — the deliberate,
 audited escape hatch for using an agent VM from a normal terminal.
@@ -144,7 +135,7 @@ name / time) lets an agent self-audit and lets `vm_destroy` confirm what a VM
 was used for before teardown.
 
 ### 2.7 Generalize `cred_*` into a first-class secret store — M
-Spec §12. The credential store already backs arbitrary secrets. Extend with:
+Spec 12. The credential store already backs arbitrary secrets. Extend with:
 secret **references injected as env vars** into `exec` (so a command can use a
 token without the value passing through the model), per-namespace access
 scoping, and TTL/expiry on secrets. The env-injection piece is the high-value
@@ -154,13 +145,13 @@ one — it keeps secrets out of the transcript.
 **Where:** [internal/exec/runner.go](internal/exec/runner.go), [internal/tools/exec_tools.go](internal/tools/exec_tools.go)
 
 `exec` buffers all stdout/stderr until the command exits. For long builds/CI
-(spec §9.4), stream incremental output via MCP progress notifications, or add
+(spec 9.4), stream incremental output via MCP progress notifications, or add
 an `exec_stream` that writes a growing log file the agent can `file_pull`.
 
 ### 2.9 Multi-agent namespacing & locking — L
-Spec §12. Today all VMs/keys share one vault. For multiple agents on one host,
+Spec 12. Today all VMs/keys share one vault. For multiple agents on one host,
 scope `vms`/`credentials` by an agent namespace and document the locking model
-(WAL handles concurrent readers; writes serialize — see §1.5). Also consider
+(WAL handles concurrent readers; writes serialize — see 1.5). Also consider
 advisory locks around `vm_create` to prevent name races.
 
 ### 2.10 Master passphrase rotation — M
@@ -209,7 +200,7 @@ exclusion the audit log already guarantees.
 **Where:** [internal/tools/tools.go](internal/tools/tools.go) `d.log(...)`
 
 The audit entry records `ok`/`error` but not duration. Add elapsed-ms and a
-coarse outcome class to every entry; an `audit_tail` tool (§2.6) then doubles
+coarse outcome class to every entry; an `audit_tail` tool (2.6) then doubles
 as a latency/error feed the agent can reason about ("vm_create is timing out").
 
 ### 4.3 `container_stats` / `vm_stats` — M
@@ -230,16 +221,16 @@ on it.
 ### 4.5 OpenTelemetry export — L (only if multi-agent)
 **Where:** new `internal/telemetry`
 
-If Orbit ever runs as shared infrastructure for many agents (§2.9), export
+If Orbit ever runs as shared infrastructure for many agents (2.9), export
 spans/metrics via OTLP so tool calls show up in standard tracing backends. Out
-of scope for single-user local use — listed so the logging in §4.1/§4.2 can be
+of scope for single-user local use — listed so the logging in 4.1/4.2 can be
 shaped to graduate into it rather than be rewritten.
 
 ---
 
 ## Suggested next milestone
 
-If picking one short cycle for maximum value: **§1.1 (base-image cache)** +
-**§1.2/§1.3 (connection reuse)**. Together they attack the two dominant
+If picking one short cycle for maximum value: **1.1 (base-image cache)** +
+**1.2/1.3 (connection reuse)**. Together they attack the two dominant
 latencies — VM cold start and per-command handshake — and make the spec's
 "sub-minute, ~60s lifecycle" claim true across all distros.

@@ -6,17 +6,17 @@ When ready to cut a release for Orbit, follow these steps:
 
 - [ ] Ensure all tests pass: `go test ./...`
 - [ ] Run `gofmt -w .` and `go vet ./...` to ensure code is clean
-- [ ] Update `version` in `cmd/orbit/main.go` to the new version (e.g., `0.2.0`)
+- [ ] Update `version` in `cmd/orbit/main.go` to the new version (currently `0.1.0`)
 - [ ] Verify `go build -o bin/orbit ./cmd/orbit` succeeds
 
 ## 2. Commit and Tag
 
 ```sh
 git add -A
-git commit -m "Release v0.2.0"
-git tag v0.2.0
+git commit -m "Release v0.1.0"
+git tag v0.1.0
 git push origin main
-git push origin v0.2.0
+git push origin v0.1.0
 ```
 
 GitHub Actions will automatically:
@@ -24,20 +24,22 @@ GitHub Actions will automatically:
 - Compute SHA256 checksums
 - Create a GitHub Release with the binaries and checksums
 
-## 3. Update the Homebrew Formula
+## 3. Fill in the Homebrew Formula Template
 
-After the GitHub Release is created and you've verified the binaries:
+[Formula/orbit.rb](Formula/orbit.rb) is a template with placeholder SHA256s.
+Do not publish it to a tap until those are replaced with checksums from the
+GitHub Release you just cut.
 
 1. Download both binaries and compute their SHA256:
    ```sh
-   curl -L https://github.com/anthropics/orbit/releases/download/v0.2.0/orbit-aarch64-apple-darwin -o orbit-arm64
-   curl -L https://github.com/anthropics/orbit/releases/download/v0.2.0/orbit-x86_64-apple-darwin -o orbit-amd64
+   curl -L https://github.com/machugram/orbit/releases/download/v0.1.0/orbit-aarch64-apple-darwin -o orbit-arm64
+   curl -L https://github.com/machugram/orbit/releases/download/v0.1.0/orbit-x86_64-apple-darwin -o orbit-amd64
    shasum -a 256 orbit-*
    ```
 
 2. Update `Formula/orbit.rb` with the new version and SHA256 hashes:
    ```ruby
-   version "0.2.0"
+   version "0.1.0"
    # Replace the sha256 values below
    sha256 "COPY-ACTUAL-HASH-HERE" # arm64
    sha256 "COPY-ACTUAL-HASH-HERE" # amd64
@@ -48,11 +50,11 @@ After the GitHub Release is created and you've verified the binaries:
    brew install --build-from-source ./Formula/orbit.rb
    ```
 
-4. Push the updated formula to your Homebrew tap (e.g., `anthropics/orbit` or `rexfordmachu/orbit`):
+4. Push the updated formula to your Homebrew tap (`machugram/orbit`):
    ```sh
    cd /path/to/homebrew-orbit  # your tap repo
    git add Formula/orbit.rb
-   git commit -m "orbit: update to v0.2.0"
+   git commit -m "orbit: update to v0.1.0"
    git push
    ```
 
@@ -94,7 +96,7 @@ brew install orbit
 If a release has issues:
 
 ```sh
-git tag -d v0.2.0
-git push origin :v0.2.0  # delete remote tag
+git tag -d v0.1.0
+git push origin :v0.1.0  # delete remote tag
 # Manually delete the GitHub Release from the web UI
 ```

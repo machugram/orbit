@@ -70,3 +70,6 @@ rather than a confusing decode failure.
   in `store.go` — the same idea as `vm.randHex`. This dropped the
   `github.com/google/uuid` direct dependency (UUIDv4 is itself just 122 random
   bits) in favor of the stdlib, keeping the dependency surface minimal.
+- A `microvms` table was added later (ADR-012) for nested-guest metadata
+  (carrier, image, forwarded SSH port, key_id). It follows the same pattern
+  as `vms` and does not change the encryption model.

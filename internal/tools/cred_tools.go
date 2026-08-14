@@ -5,7 +5,7 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"orbit/internal/vault"
+	"github.com/machugram/orbit/internal/vault"
 )
 
 type credSetArgs struct {
@@ -43,7 +43,7 @@ func registerCredTools(server *mcp.Server, d *Deps) {
 
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "cred_get",
-		Description: "Retrieve a secret from the vault.",
+		Description: "Retrieve a secret from the vault. The value is returned to the caller (including the model); prefer secret_env on container/compose tools when the secret must stay out of the transcript.",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, args credKeyArgs) (*mcp.CallToolResult, any, error) {
 		val, err := d.Vault.GetCredential(args.Namespace, args.Key)
 		d.log("cred_get", map[string]any{"namespace": args.Namespace, "key": args.Key}, err)

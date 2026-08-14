@@ -1,0 +1,433 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Orbit — Technical Presentation</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --color-bg:#ffffff;
+  --color-bg-secondary:#f5f5f3;
+  --color-bg-info:#e6f1fb;
+  --color-bg-success:#eaf3de;
+  --color-bg-warning:#faeeda;
+  --color-text:#1a1a18;
+  --color-text-secondary:#5f5e5a;
+  --color-text-tertiary:#888780;
+  --color-text-info:#0c447c;
+  --color-text-success:#27500a;
+  --color-text-warning:#633806;
+  --color-border:#e8e6df;
+  --color-border-secondary:#d3d1c7;
+  --radius-md:8px;
+  --radius-lg:12px;
+  --font-sans:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
+  --font-mono:'SF Mono','Fira Code',monospace;
+}
+@media(prefers-color-scheme:dark){
+  :root{
+    --color-bg:#1e1e1c;
+    --color-bg-secondary:#2a2a28;
+    --color-bg-info:#042c53;
+    --color-bg-success:#173404;
+    --color-bg-warning:#412402;
+    --color-text:#e8e6df;
+    --color-text-secondary:#b4b2a9;
+    --color-text-tertiary:#888780;
+    --color-text-info:#85b7eb;
+    --color-text-success:#97c459;
+    --color-text-warning:#ef9f27;
+    --color-border:#3a3a38;
+    --color-border-secondary:#4a4a48;
+  }
+}
+body{
+  font-family:var(--font-sans);
+  background:var(--color-bg);
+  color:var(--color-text);
+  min-height:100vh;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  padding:2rem;
+}
+.deck{width:100%;max-width:780px}
+.slide{display:none;min-height:420px;flex-direction:column;justify-content:flex-start}
+.slide.active{display:flex}
+.nav{display:flex;align-items:center;justify-content:space-between;margin-bottom:1.5rem}
+.nav-pills{display:flex;gap:6px;align-items:center;flex-wrap:wrap}
+.pill{width:8px;height:8px;border-radius:50%;background:var(--color-border-secondary);cursor:pointer;border:none;padding:0;transition:background 0.15s}
+.pill.on{background:var(--color-text-secondary)}
+.nav-btns{display:flex;gap:8px}
+.nav-btns button,.pill:focus-visible{
+  outline:2px solid var(--color-text-info);
+  outline-offset:2px;
+}
+.nav-btns button{
+  background:transparent;
+  border:0.5px solid var(--color-border-secondary);
+  border-radius:var(--radius-md);
+  padding:6px 10px;
+  cursor:pointer;
+  color:var(--color-text);
+  font-size:16px;
+  transition:background 0.1s;
+  outline:none;
+}
+.nav-btns button:hover{background:var(--color-bg-secondary)}
+.nav-btns button:focus-visible{
+  outline:2px solid var(--color-text-info);
+  outline-offset:2px;
+}
+.slide-label{font-size:12px;color:var(--color-text-tertiary);font-weight:500;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:0.5rem}
+.slide-title{font-size:26px;font-weight:500;margin-bottom:1.25rem;line-height:1.3}
+.slide-subtitle{font-size:15px;color:var(--color-text-secondary);margin-bottom:1.5rem;line-height:1.7}
+.byline{font-size:13px;color:var(--color-text-secondary);margin-bottom:1rem;line-height:1.6}
+.narrative{font-size:15px;color:var(--color-text);line-height:1.7;margin-bottom:1.25rem;padding:0.9rem 1rem;background:var(--color-bg-secondary);border-radius:var(--radius-md);border-left:3px solid var(--color-text-info)}
+.links{font-size:13px;margin-bottom:1.25rem;line-height:1.8}
+.links a{color:var(--color-text-info);text-decoration:none}
+.links a:hover{text-decoration:underline}
+.card{background:var(--color-bg);border:0.5px solid var(--color-border);border-radius:var(--radius-lg);padding:1rem 1.25rem}
+.grid2{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:12px}
+.grid3{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px}
+.grid4{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px}
+.card-label{font-size:11px;font-weight:500;color:var(--color-text-tertiary);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:6px}
+.card-title{font-size:14px;font-weight:500;margin-bottom:6px}
+.card-body{font-size:13px;color:var(--color-text-secondary);line-height:1.6}
+code{font-family:var(--font-mono);font-size:12px;background:var(--color-bg-secondary);padding:1px 5px;border-radius:4px}
+.stat{background:var(--color-bg-secondary);border-radius:var(--radius-md);padding:1.25rem;text-align:center}
+.stat-n{font-size:32px;font-weight:500;color:var(--color-text)}
+.stat-l{font-size:12px;color:var(--color-text-secondary);margin-top:4px}
+.chip{display:inline-block;font-size:11px;font-weight:500;padding:3px 8px;border-radius:var(--radius-md);margin:2px}
+.chip-p{background:var(--color-bg-info);color:var(--color-text-info)}
+.chip-t{background:var(--color-bg-success);color:var(--color-text-success)}
+.chip-w{background:var(--color-bg-warning);color:var(--color-text-warning)}
+.row{display:flex;align-items:flex-start;gap:12px;margin-bottom:12px}
+.icon-box{width:42px;height:34px;border-radius:var(--radius-md);background:var(--color-bg-secondary);display:flex;align-items:center;justify-content:center;flex-shrink:0;font-size:10px;font-weight:600;letter-spacing:0.04em;color:var(--color-text-secondary);font-family:var(--font-mono)}
+.flow{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:1.25rem}
+.fbox{background:var(--color-bg);border:0.5px solid var(--color-border);border-radius:var(--radius-md);padding:7px 14px;font-size:13px;font-weight:500}
+.fbox-hl{background:var(--color-bg-info);border-color:var(--color-border-secondary);color:var(--color-text-info)}
+.farr{color:var(--color-text-tertiary);font-size:18px}
+.code-block{font-family:var(--font-mono);font-size:12px;background:var(--color-bg-secondary);border-radius:var(--radius-md);padding:1rem 1.25rem;line-height:1.8;color:var(--color-text);border:0.5px solid var(--color-border);margin-bottom:1rem}
+.hl{color:var(--color-text-info)}
+.dim{color:var(--color-text-tertiary)}
+.adr-row{display:flex;gap:10px;align-items:baseline;padding:6px 0;border-bottom:0.5px solid var(--color-border)}
+.adr-row:last-child{border:none}
+.adr-n{font-size:11px;font-weight:500;color:var(--color-text-tertiary);min-width:52px;font-family:var(--font-mono)}
+.adr-d{font-size:13px;color:var(--color-text);flex:1}
+.adr-chip{font-size:11px;padding:2px 8px;border-radius:var(--radius-md);background:var(--color-bg-success);color:var(--color-text-success);margin-left:8px;flex-shrink:0;font-weight:500}
+.adr-chip.sec{background:var(--color-bg-info);color:var(--color-text-info)}
+.adr-chip.dep{background:var(--color-bg-secondary);color:var(--color-text-secondary)}
+.adr-chip.ux{background:var(--color-bg-warning);color:var(--color-text-warning)}
+.slide-counter{font-size:12px;color:var(--color-text-tertiary);margin-left:12px}
+.diagram{font-family:var(--font-mono);font-size:11px;line-height:1.45;background:var(--color-bg-secondary);border:0.5px solid var(--color-border);border-radius:var(--radius-md);padding:0.9rem 1rem;margin-bottom:1rem;white-space:pre;overflow-x:auto;color:var(--color-text)}
+.limit li{font-size:13px;color:var(--color-text-secondary);line-height:1.6;margin-bottom:8px;margin-left:1.1rem}
+@media print{
+  body{display:block;padding:0;background:#fff;color:#1a1a18}
+  .nav{display:none}
+  .deck{max-width:none}
+  .slide{
+    display:flex !important;
+    page-break-after:always;
+    break-after:page;
+    min-height:0;
+    padding:1.5rem 0;
+  }
+  .slide:last-child{page-break-after:auto}
+  a{color:inherit;text-decoration:underline}
+}
+</style>
+</head>
+<body>
+<div class="deck">
+
+<div class="nav">
+  <div style="display:flex;align-items:center">
+    <div class="nav-pills" id="pills"></div>
+    <span class="slide-counter" id="counter" aria-live="polite">1 / 12</span>
+  </div>
+  <div class="nav-btns">
+    <button type="button" onclick="go(-1)" aria-label="Previous slide">←</button>
+    <button type="button" onclick="go(1)" aria-label="Next slide">→</button>
+  </div>
+</div>
+
+<div id="slides">
+
+<div class="slide active">
+  <div class="slide-label">Orbit — technical overview</div>
+  <div class="slide-title">Autonomous agent infrastructure<br>on OrbStack</div>
+  <div class="byline">Built by <strong>Rexford Machu</strong>. A local MCP server so an agent can own its SSH keys, spin up isolated Linux VMs and nested microVMs, run containers, and tear them down — secrets stay in an encrypted vault on the Mac.</div>
+  <div class="narrative">I built a local agent runtime that keeps credentials under user control, discovered OrbStack’s SSH multiplexer broke per-VM identity isolation, replaced it with direct SSH, then added a separate-kernel QEMU path for eBPF and a declarative state reconciler.</div>
+  <div class="links">
+    <a href="https://github.com/machugram/orbit">github.com/machugram/orbit</a>
+    · <a href="README.md">README</a>
+    · <a href="SECURITY.md">SECURITY</a>
+    · <a href="docs/adr/ADR-001-go-over-typescript.md">ADRs</a>
+    · <a href="docs/SYSTEM_DESIGN.md">system design</a>
+  </div>
+  <div class="slide-subtitle">macOS + OrbStack only. Single cgo-free Go binary. MIT licensed. Not affiliated with other projects named Orbit.</div>
+  <div class="grid4" style="margin-top:auto">
+    <div class="stat"><div class="stat-n">40</div><div class="stat-l">MCP tools</div></div>
+    <div class="stat"><div class="stat-n">10</div><div class="stat-l">internal packages</div></div>
+    <div class="stat"><div class="stat-n">12</div><div class="stat-l">ADRs</div></div>
+    <div class="stat"><div class="stat-n">Go</div><div class="stat-l">cgo-free binary</div></div>
+  </div>
+</div>
+
+<div class="slide">
+  <div class="slide-label">Architecture</div>
+  <div class="slide-title">Four execution modes, shared plumbing</div>
+  <div class="slide-subtitle">Work runs as a VM, a container, a nested microVM, or a declared state document. Exec, vault, and audit are shared — not extra modes.</div>
+  <div class="diagram">MCP client (e.g. Claude Code)
+        │  stdio JSON-RPC
+        ▼
+   orbit binary
+     VM · container · microVM · state
+     exec.Resolver · vault · audit
+        │
+   orbctl / docker / QEMU TCG
+   SSH to &lt;vm&gt;.orb.local:22
+    or &lt;carrier&gt;.orb.local:&lt;port&gt;</div>
+  <div class="grid3">
+    <div class="card"><div class="card-label">vm</div><div class="card-body"><code>orbctl</code> wrapper + multi-distro provisioner. Isolated machines, no macOS file sharing.</div></div>
+    <div class="card"><div class="card-label">container</div><div class="card-body"><code>docker</code> + compose. Inline YAML on stdin. Vault <code>secret_env</code>. Starts in 1–3s vs 30–60s for a VM.</div></div>
+    <div class="card"><div class="card-label">microvm</div><div class="card-body">Nested QEMU/TCG guest with its <em>own</em> kernel, for eBPF. Same <code>exec</code> / <code>file_*</code> tools by name.</div></div>
+    <div class="card"><div class="card-label">state</div><div class="card-body">JSON desired state. <code>state_plan</code> diffs; <code>state_apply</code> converges; <code>state_destroy</code> tears down only what is named.</div></div>
+    <div class="card"><div class="card-label">exec (plumbing)</div><div class="card-body">A <code>Resolver</code> maps an id to a VM or nested guest. Direct SSH, in-memory Ed25519 signer.</div></div>
+    <div class="card"><div class="card-label">vault + audit (plumbing)</div><div class="card-body">AES-256-GCM + Argon2id SQLite. JSONL audit log records names, never secret values.</div></div>
+  </div>
+</div>
+
+<div class="slide">
+  <div class="slide-label">Security model</div>
+  <div class="slide-title">Security invariants — and two deliberate bounds</div>
+  <div>
+    <div class="row">
+      <div class="icon-box" aria-hidden="true">KEY</div>
+      <div><div class="card-title">Private keys never touch disk</div><div class="card-body">Ed25519 keys decrypt into process memory for one SSH connection, then GC. The Go client takes an in-memory <code>ssh.Signer</code> — no temp files.</div></div>
+    </div>
+    <div class="row">
+      <div class="icon-box" aria-hidden="true">ARGV</div>
+      <div><div class="card-title">Secret values never appear in argv</div><div class="card-body"><code>secret_env</code> maps env-var name → vault key. Docker gets a bare <code>-e NAME</code> flag; the value lives only in the subprocess environment. Invisible to <code>ps</code>.</div></div>
+    </div>
+    <div class="row">
+      <div class="icon-box" aria-hidden="true">AES</div>
+      <div><div class="card-title">Vault is encrypted at rest</div><div class="card-body">Argon2id (salt=32B, m=64MiB, t=3, p=4). Fresh 12-byte IV per write. Auth tag detects tampering. Derived key never persisted. Passphrase from Keychain or <code>ORBIT_PASSPHRASE</code>.</div></div>
+    </div>
+    <div class="row">
+      <div class="icon-box" aria-hidden="true">GET</div>
+      <div><div class="card-title"><code>cred_get</code> returns values to the caller</div><div class="card-body">Including the model. That is intentional. <code>cred_list</code> / <code>key_list</code> return names only. Prefer <code>secret_env</code> when a secret must stay out of the transcript.</div></div>
+    </div>
+    <div class="row">
+      <div class="icon-box" aria-hidden="true">SSH</div>
+      <div><div class="card-title">SSH host keys are trust-on-connect</div><div class="card-body"><code>InsecureIgnoreHostKey</code> because traffic stays on loopback (<code>.orb.local</code> or a carrier-local port). TOFU pinning is planned and required before anything is reachable off-loopback (ADR-011).</div></div>
+    </div>
+  </div>
+</div>
+
+<div class="slide">
+  <div class="slide-label">VM lifecycle</div>
+  <div class="slide-title">VM lifecycle: <code>vm_create</code></div>
+  <div class="flow">
+    <div class="fbox">generate Ed25519 key</div><span class="farr">→</span>
+    <div class="fbox">orbctl create --isolated</div><span class="farr">→</span>
+    <div class="fbox">provision via orb root</div><span class="farr">→</span>
+    <div class="fbox">SSH ready</div>
+  </div>
+  <div class="grid2">
+    <div class="card">
+      <div class="card-label">Multi-distro provisioner</div>
+      <div class="card-body" style="margin-bottom:8px">A single POSIX sh script auto-detects the package manager and init system:</div>
+      <div style="margin-bottom:6px"><span class="chip chip-p">apt</span><span class="chip chip-p">apk</span><span class="chip chip-p">dnf</span><span class="chip chip-p">yum</span><span class="chip chip-p">zypper</span><span class="chip chip-p">pacman</span><span class="chip chip-p">xbps</span></div>
+      <div style="margin-bottom:8px"><span class="chip chip-t">systemd</span><span class="chip chip-t">OpenRC</span><span class="chip chip-t">runit</span></div>
+      <div class="card-body">No cloud-init — OrbStack only ships it for Debian/Ubuntu. Alpine, Fedora, and Arch all work (ADR-003). NixOS is the known exception.</div>
+    </div>
+    <div class="card">
+      <div class="card-label">Why direct SSH, not the multiplexer</div>
+      <div class="card-body">OrbStack's <code>127.0.0.1:32222</code> multiplexer uses a single host key and ignores per-VM <code>authorized_keys</code>. Using it collapses every VM onto one identity. Orbit dials <code>&lt;vm&gt;.orb.local:22</code> so each machine keeps its own keypair (ADR-002).</div>
+    </div>
+  </div>
+</div>
+
+<div class="slide">
+  <div class="slide-label">Containers</div>
+  <div class="slide-title">Container tools + secret injection</div>
+  <div class="code-block">
+    <span class="dim">agent calls</span>  container_run(<span class="hl">image</span>="postgres:16", <span class="hl">secret_env</span>={"POSTGRES_PASSWORD": "prod-db-pw"})<br><br>
+    <span class="dim">orbit reads</span>  vault.GetCredential("default", "prod-db-pw") → value <span class="dim">(in memory)</span><br>
+    <span class="dim">orbit builds</span> argv: docker run -d <span class="hl">-e POSTGRES_PASSWORD</span> postgres:16  <span class="dim">← no value in argv</span><br>
+    <span class="dim">orbit sets</span>  subprocess env: POSTGRES_PASSWORD=<span class="hl">&lt;value&gt;</span>           <span class="dim">← value here only</span><br>
+    <span class="dim">audit logs</span>  {"secret_env": ["POSTGRES_PASSWORD"]}              <span class="dim">← name only</span>
+  </div>
+  <div class="grid3">
+    <div class="card"><div class="card-label">Lifecycle</div><div class="card-body"><code>container_run</code> <code>container_exec</code> <code>container_logs</code> <code>container_list</code> <code>container_stop</code> <code>container_rm</code></div></div>
+    <div class="card"><div class="card-label">Compose stack</div><div class="card-body"><code>compose_up</code> <code>compose_down</code> <code>compose_logs</code> <code>compose_ps</code> <code>compose_exec</code> <code>compose_build</code> — file path or inline YAML via <code>-f -</code></div></div>
+    <div class="card"><div class="card-label">Images</div><div class="card-body"><code>image_build</code> — host context or inline Dockerfile on stdin. No temp files.</div></div>
+  </div>
+</div>
+
+<div class="slide">
+  <div class="slide-label">Nested microVMs</div>
+  <div class="slide-title">Own kernel, for eBPF — nested QEMU/TCG</div>
+  <div class="slide-subtitle">On Apple Silicon every OrbStack machine shares one kernel. An eBPF program loaded “inside a VM” attaches to that shared kernel. Isolation requires a nested guest.</div>
+  <div class="flow">
+    <div class="fbox">macOS</div><span class="farr">→</span>
+    <div class="fbox">OrbStack carrier <span class="dim">--isolated</span></div><span class="farr">→</span>
+    <div class="fbox fbox-hl">QEMU TCG → guest kernel</div>
+  </div>
+  <div class="grid2">
+    <div class="card">
+      <div class="card-label">Why TCG, not KVM</div>
+      <div class="card-body">There is no <code>/dev/kvm</code> inside an OrbStack machine. TCG is slow and correct. Default <code>alpine</code> boots direct-kernel in tens of seconds; <code>ubuntu</code> is a full cloud image with a BTF kernel for CO-RE eBPF (minutes). Carrier must be Debian/Ubuntu (ADR-012).</div>
+    </div>
+    <div class="card">
+      <div class="card-label">Same exec path</div>
+      <div class="card-body">QEMU forwards <code>&lt;carrier&gt;.orb.local:&lt;port&gt;</code> into guest:22. A <code>microvm.Resolver</code> chains onto the vault resolver, so <code>exec_script vm_id=bpf-lab</code> just works. Tools: <code>microvm_create</code> <code>list</code> <code>start</code> <code>stop</code> <code>destroy</code>.</div>
+    </div>
+  </div>
+</div>
+
+<div class="slide">
+  <div class="slide-label">Desired state</div>
+  <div class="slide-title">Declare what should exist</div>
+  <div class="slide-subtitle">Instead of a script of create/run/destroy calls, the agent submits a JSON document. Orbit diffs it against live resources and converges.</div>
+  <div class="code-block">
+{<br>
+&nbsp;&nbsp;<span class="hl">"vms"</span>: [{ "name": "worker", "distro": "alpine" }],<br>
+&nbsp;&nbsp;<span class="hl">"containers"</span>: [{ "image": "postgres:16", "name": "db", "ports": ["5432:5432"] }],<br>
+&nbsp;&nbsp;<span class="hl">"composes"</span>: [{ "project": "api", "yaml": "services:\n  web:\n    image: nginx" }]<br>
+}
+  </div>
+  <div class="grid3">
+    <div class="card"><div class="card-label">state_plan</div><div class="card-body">Dry-run. Returns the action list (create / run / up / noop) without touching anything.</div></div>
+    <div class="card"><div class="card-label">state_apply</div><div class="card-body">Creates missing VMs, runs missing containers, brings up compose stacks. Already-running resources are left alone.</div></div>
+    <div class="card"><div class="card-label">state_destroy</div><div class="card-body">Tears down only what the document names. VMs purge their keys. Nested microVMs stay on the <code>microvm_*</code> tools.</div></div>
+  </div>
+</div>
+
+<div class="slide">
+  <div class="slide-label">Tools surface</div>
+  <div class="slide-title">40 MCP tools across 7 groups</div>
+  <div style="display:flex;flex-direction:column;gap:8px">
+    <div class="card" style="padding:0.75rem 1rem"><div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap"><span class="card-label" style="min-width:90px;margin-bottom:0">vm_*</span><span class="chip chip-p">vm_create</span><span class="chip chip-p">vm_list</span><span class="chip chip-p">vm_start</span><span class="chip chip-p">vm_stop</span><span class="chip chip-p">vm_destroy</span></div></div>
+    <div class="card" style="padding:0.75rem 1rem"><div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap"><span class="card-label" style="min-width:90px;margin-bottom:0">key_*</span><span class="chip chip-t">key_generate</span><span class="chip chip-t">key_list</span><span class="chip chip-t">key_rotate</span><span class="chip chip-t">key_revoke</span><span class="chip chip-t">key_export_public</span></div></div>
+    <div class="card" style="padding:0.75rem 1rem"><div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap"><span class="card-label" style="min-width:90px;margin-bottom:0">exec / file</span><span class="chip chip-w">exec</span><span class="chip chip-w">exec_script</span><span class="chip chip-w">exec_parallel</span><span class="chip chip-w">file_push</span><span class="chip chip-w">file_pull</span></div></div>
+    <div class="card" style="padding:0.75rem 1rem"><div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap"><span class="card-label" style="min-width:90px;margin-bottom:0">cred_*</span><span class="chip chip-p">cred_set</span><span class="chip chip-p">cred_get</span><span class="chip chip-p">cred_list</span><span class="chip chip-p">cred_delete</span></div></div>
+    <div class="card" style="padding:0.75rem 1rem"><div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap"><span class="card-label" style="min-width:90px;margin-bottom:0">container</span><span class="chip chip-t">container_*</span><span class="chip chip-t">compose_*</span><span class="chip chip-t">image_build</span></div></div>
+    <div class="card" style="padding:0.75rem 1rem"><div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap"><span class="card-label" style="min-width:90px;margin-bottom:0">microvm_*</span><span class="chip chip-w">microvm_create</span><span class="chip chip-w">microvm_list</span><span class="chip chip-w">microvm_start</span><span class="chip chip-w">microvm_stop</span><span class="chip chip-w">microvm_destroy</span></div></div>
+    <div class="card" style="padding:0.75rem 1rem"><div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap"><span class="card-label" style="min-width:90px;margin-bottom:0">state_*</span><span class="chip chip-p">state_plan</span><span class="chip chip-p">state_apply</span><span class="chip chip-p">state_destroy</span></div></div>
+  </div>
+</div>
+
+<div class="slide">
+  <div class="slide-label">Key decisions</div>
+  <div class="slide-title">Architecture decision records</div>
+  <div>
+    <div class="adr-row"><span class="adr-n">ADR-001</span><span class="adr-d">Go over TypeScript — in-memory SSH signers, stdlib crypto, single cgo-free binary</span><span class="adr-chip dep">core</span></div>
+    <div class="adr-row"><span class="adr-n">ADR-002</span><span class="adr-d">Direct SSH to <code>&lt;vm&gt;.orb.local:22</code> — multiplexer collapses credentials</span><span class="adr-chip sec">security</span></div>
+    <div class="adr-row"><span class="adr-n">ADR-003</span><span class="adr-d">Root provisioning script — cloud-init absent on Alpine / Fedora / Arch</span><span class="adr-chip">portability</span></div>
+    <div class="adr-row"><span class="adr-n">ADR-004</span><span class="adr-d">AES-256-GCM + Argon2id vault in SQLite — local, encrypted, single file</span><span class="adr-chip sec">security</span></div>
+    <div class="adr-row"><span class="adr-n">ADR-005</span><span class="adr-d">Container tools with vault secret injection via bare <code>-e NAME</code></span><span class="adr-chip sec">security</span></div>
+    <div class="adr-row"><span class="adr-n">ADR-006</span><span class="adr-d"><code>compose_exec</code> via container resolution — avoids stdin conflict with inline YAML</span><span class="adr-chip">design</span></div>
+    <div class="adr-row"><span class="adr-n">ADR-007</span><span class="adr-d">No direct uuid dep — <code>crypto/rand</code> hex; uuid remains an MCP-SDK transitive</span><span class="adr-chip dep">deps</span></div>
+    <div class="adr-row"><span class="adr-n">ADR-008</span><span class="adr-d">Inline compose YAML via stdin (<code>-f -</code>) — no temp files</span><span class="adr-chip">design</span></div>
+    <div class="adr-row"><span class="adr-n">ADR-009</span><span class="adr-d">JSONL audit log now — slog / metrics / OTel deferred to ROADMAP §4</span><span class="adr-chip">scope</span></div>
+    <div class="adr-row"><span class="adr-n">ADR-010</span><span class="adr-d">Vault passphrase via macOS Keychain with env override and auto-generation</span><span class="adr-chip ux">ux</span></div>
+    <div class="adr-row"><span class="adr-n">ADR-011</span><span class="adr-d">SSH host-key trust-on-connect — bounded by loopback; TOFU pinning later</span><span class="adr-chip sec">security</span></div>
+    <div class="adr-row"><span class="adr-n">ADR-012</span><span class="adr-d">Nested QEMU/TCG guests with their own kernel — eBPF cannot share OrbStack's</span><span class="adr-chip sec">security</span></div>
+  </div>
+</div>
+
+<div class="slide">
+  <div class="slide-label">Outcomes and evidence</div>
+  <div class="slide-title">What shipped, and how you can check</div>
+  <div class="grid4" style="margin-bottom:1.25rem">
+    <div class="stat"><div class="stat-n">11</div><div class="stat-l">build sessions done</div></div>
+    <div class="stat"><div class="stat-n">16</div><div class="stat-l">Go test files</div></div>
+    <div class="stat"><div class="stat-n">54–80%</div><div class="stat-l">core package coverage</div></div>
+    <div class="stat"><div class="stat-n">2</div><div class="stat-l">CI workflows</div></div>
+  </div>
+  <div class="grid2">
+    <div class="card">
+      <div class="card-label">Verify locally</div>
+      <div class="card-body"><code>go test ./...</code> and <code>go vet ./...</code> pass without OrbStack (fakes for orbctl, docker, SSH). Opt-in: <code>go run ./cmd/smoke</code> against a real VM; <code>ORBIT_DOCKER_E2E=1 go test ./internal/container/</code> for vault injection.</div>
+    </div>
+    <div class="card">
+      <div class="card-label">What that coverage means</div>
+      <div class="card-body">Vault, exec, VM, container, microvm, state, keys, and audit are unit-tested. <code>TestAllSpecToolsRegistered</code> asserts all 40 tools, including the five <code>microvm_*</code> tools. Smoke and Docker E2E are opt-in, not in CI. No public GitHub Release yet — build from source.</div>
+    </div>
+  </div>
+</div>
+
+<div class="slide">
+  <div class="slide-label">Limitations</div>
+  <div class="slide-title">What this is not</div>
+  <ul class="limit">
+    <li><strong>macOS + OrbStack only.</strong> Keychain bootstrap and <code>orbctl</code> are host-specific. Other platforms need <code>ORBIT_PASSPHRASE</code> and still cannot drive VMs without OrbStack.</li>
+    <li><strong>Local loopback trust.</strong> SSH host keys are trust-on-connect. Fine on <code>.orb.local</code>; not for off-machine exposure (ADR-011).</li>
+    <li><strong><code>cred_get</code> is a transcript leak by design.</strong> Use <code>secret_env</code> when the model must not see the value.</li>
+    <li><strong>Nested guests are slow.</strong> No <code>/dev/kvm</code> → QEMU TCG. Alpine boots in tens of seconds; Ubuntu with BTF takes minutes. Correct isolation, not throughput.</li>
+    <li><strong>NixOS is unsupported</strong> by the auto-detect provisioner. Declarative <code>configuration.nix</code> is ROADMAP §2.4.</li>
+    <li><strong>No GitHub Release yet.</strong> Homebrew formula is a SHA256 template. <code>go install …@latest</code> works only after the module is published.</li>
+  </ul>
+</div>
+
+<div class="slide">
+  <div class="slide-label">Distribution</div>
+  <div class="slide-title">How to build and ship it</div>
+  <div class="grid2" style="margin-bottom:1.25rem">
+    <div class="card">
+      <div class="card-label">From source (what to use today)</div>
+      <div class="card-body" style="margin-bottom:12px">Go 1.25+. Unit tests use fakes — no OrbStack required. <code>cmd/smoke</code> is the opt-in real-VM path.</div>
+      <div class="code-block" style="font-size:12px;margin:0">git clone https://github.com/machugram/orbit.git<br>go test ./...<br>go build -o bin/orbit ./cmd/orbit<br>claude mcp add orbit -- $PWD/bin/orbit</div>
+    </div>
+    <div class="card">
+      <div class="card-label">Releases and Homebrew</div>
+      <div class="card-body" style="margin-bottom:12px">A <code>v*</code> tag is intended to build arm64 + amd64. No release exists yet. The in-tree Homebrew formula is a <strong>template</strong> — placeholder SHA256s. Do not <code>brew install</code> it yet. <code>go install …@latest</code> after the module is on the proxy.</div>
+      <div class="code-block" style="font-size:12px;margin:0">git tag v0.1.0<br>git push origin v0.1.0<br><span class="dim"># then fill Formula/orbit.rb checksums</span></div>
+    </div>
+  </div>
+  <div class="grid3">
+    <div class="stat"><div class="stat-n">2</div><div class="stat-l">CI workflows</div></div>
+    <div class="stat"><div class="stat-n">macOS</div><div class="stat-l">arm64 + amd64</div></div>
+    <div class="stat"><div class="stat-n">cgo-free</div><div class="stat-l">needs OrbStack on PATH</div></div>
+  </div>
+</div>
+
+</div>
+</div>
+
+<script>
+var cur=0;
+var slides=document.querySelectorAll('.slide');
+var n=slides.length;
+var pc=document.getElementById('pills');
+var counter=document.getElementById('counter');
+counter.textContent='1 / '+n;
+for(var i=0;i<n;i++){
+  var b=document.createElement('button');
+  b.type='button';
+  b.className='pill'+(i===0?' on':'');
+  b.setAttribute('aria-label','Go to slide '+(i+1));
+  b.dataset.i=i;
+  b.onclick=function(){jump(+this.dataset.i)};
+  pc.appendChild(b);
+}
+function go(d){jump((cur+d+n)%n)}
+function jump(i){
+  slides[cur].classList.remove('active');
+  pc.children[cur].classList.remove('on');
+  cur=i;
+  slides[cur].classList.add('active');
+  pc.children[cur].classList.add('on');
+  counter.textContent=(cur+1)+' / '+n;
+}
+document.addEventListener('keydown',function(e){
+  if(e.key==='ArrowRight'||e.key==='ArrowDown')go(1);
+  if(e.key==='ArrowLeft'||e.key==='ArrowUp')go(-1);
+});
+</script>
+</body>
+</html>
