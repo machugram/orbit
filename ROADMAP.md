@@ -66,13 +66,12 @@ Argon2id derivation (~0.3–0.7s) is paid once at server start by design — do
 
 ## 2. Features
 
-### 2.1 Ephemeral VMs with idle TTL / auto-destroy — M
-**Where:** new `internal/vm` reaper + `vms` table (already has `created_at`)
+### 2.1 Ephemeral VMs with idle TTL / auto-destroy — M — **done**
+**Where:** [internal/vm/reaper.go](internal/vm/reaper.go), vault `vms` columns, `vm_create` args
 
-Spec 12 + 9.1. Let `vm_create` mark a VM ephemeral with a TTL; a background
-reaper destroys VMs idle past the deadline and purges their keys. Track
-`last_used_at` (update on every `exec`). Prevents sandbox VMs from leaking when
-an agent forgets to call `vm_destroy`.
+`vm_create` accepts `ephemeral` + optional `ttl_seconds` (default 30m). Successful
+`exec` / file / script ops touch `last_used_at`. A background reaper destroys
+idle ephemeral VMs (purge keys + SSH `Invalidate`). Warm bases are never reaped.
 
 ### 2.2 `vm_snapshot` — M
 **Where:** new tool in [internal/tools/vm_tools.go](internal/tools/vm_tools.go)
@@ -213,6 +212,5 @@ shaped to graduate into it rather than be rewritten.
 
 ## Suggested next milestone
 
-**2.1 ephemeral TTL** is next (builds on clone + SSH `Invalidate`). Then
-**2.9 multi-agent namespaces**.
+**2.9 multi-agent namespaces** is next (scopes vault rows and the ephemeral reaper).
 

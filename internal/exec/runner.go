@@ -53,9 +53,28 @@ type Runner struct {
 	idleTTL     time.Duration
 	dialTCP     func(ctx context.Context, network, address string) (net.Conn, error)
 	onDial      func() // test hook: called once per new TCP dial
+	activity    ActivityTracker
 
 	poolMu sync.Mutex
 	pool   map[string]*pooledClient
+}
+
+// ActivityTracker records that a target was used (for ephemeral idle TTL).
+type ActivityTracker interface {
+	Touch(vmID string) error
+}
+
+// VaultActivity touches last_used_at on vault VM records.
+type VaultActivity struct {
+	Store *vault.Store
+}
+
+// Touch implements ActivityTracker.
+func (a VaultActivity) Touch(vmID string) error {
+	if a.Store == nil {
+		return nil
+	}
+	return a.Store.TouchVMLastUsed(vmID)
 }
 
 // RunnerOption customizes a Runner.
@@ -67,6 +86,7 @@ type runnerConfig struct {
 	idleTTL     time.Duration
 	dialTCP     func(ctx context.Context, network, address string) (net.Conn, error)
 	onDial      func()
+	activity    ActivityTracker
 }
 
 // WithTarget overrides how VM ids resolve to SSH endpoints (used by tests
@@ -95,6 +115,11 @@ func WithOnDial(f func()) RunnerOption {
 	return func(c *runnerConfig) { c.onDial = f }
 }
 
+// WithActivityTracker records successful ops against a target (ephemeral TTL).
+func WithActivityTracker(a ActivityTracker) RunnerOption {
+	return func(c *runnerConfig) { c.activity = a }
+}
+
 // NewRunner returns a Runner that connects to each VM's own sshd at
 // <vm>.orb.local:22 as the "agent" user, authenticating with the VM's
 // vault-held key.
@@ -116,6 +141,7 @@ func newRunner(resolver Resolver, cfg runnerConfig) *Runner {
 		idleTTL:     cfg.idleTTL,
 		dialTCP:     cfg.dialTCP,
 		onDial:      cfg.onDial,
+		activity:    cfg.activity,
 		pool:        make(map[string]*pooledClient),
 	}
 }
@@ -216,7 +242,15 @@ func (r *Runner) exec(ctx context.Context, vmID, command string, stdin io.Reader
 		}
 		return nil, fmt.Errorf("exec: command on %s: %w", vmID, err)
 	}
+	r.touch(vmID)
 	return res, nil
+}
+
+func (r *Runner) touch(vmID string) {
+	if r.activity == nil {
+		return
+	}
+	_ = r.activity.Touch(vmID)
 }
 
 // allowedInterpreters bounds the exec_script interpreter to a fixed set, so a
@@ -260,6 +294,7 @@ func (r *Runner) ExecScript(ctx context.Context, vmID, script, interpreter strin
 		ok = false
 		return nil, err
 	}
+	r.touch(vmID)
 	return res, nil
 }
 

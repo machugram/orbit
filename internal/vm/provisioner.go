@@ -89,10 +89,25 @@ func (p *Provisioner) User() string { return p.user }
 // KeyLabel returns the vault label of the keypair for a VM name.
 func KeyLabel(vmName string) string { return "vm-" + vmName }
 
+// CreateOptions customizes Provisioner.Create beyond distro/name/isolation.
+type CreateOptions struct {
+	// Ephemeral marks the VM for idle auto-destroy by the reaper.
+	Ephemeral bool
+	// TTL is the idle lifetime when Ephemeral is true. Zero means DefaultEphemeralTTL.
+	TTL time.Duration
+}
+
+// DefaultEphemeralTTL is used when vm_create sets ephemeral without an explicit ttl.
+const DefaultEphemeralTTL = 30 * time.Minute
+
 // Create provisions a new machine with its own freshly generated keypair.
 // Cold path: create+provision a per-distro warm base once. Warm path: clone
 // the base and inject only authorized_keys for the new key.
-func (p *Provisioner) Create(ctx context.Context, distro, name string, isolated bool) (*vault.VM, error) {
+func (p *Provisioner) Create(ctx context.Context, distro, name string, isolated bool, opts ...CreateOptions) (*vault.VM, error) {
+	var opt CreateOptions
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
 	if name == "" {
 		name = "agent-" + randHex(4)
 	}
@@ -134,6 +149,17 @@ func (p *Provisioner) Create(ctx context.Context, distro, name string, isolated 
 
 	if err := p.vms.SetKey(name, keyID); err != nil {
 		return nil, err
+	}
+	if opt.Ephemeral {
+		ttl := opt.TTL
+		if ttl <= 0 {
+			ttl = DefaultEphemeralTTL
+		}
+		if err := p.vms.store.SetVMEphemeral(name, int64(ttl.Seconds())); err != nil {
+			return nil, err
+		}
+		rec.Ephemeral = true
+		rec.TTLSeconds = int64(ttl.Seconds())
 	}
 	rec.KeyID = keyID
 	return rec, nil

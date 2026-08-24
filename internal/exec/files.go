@@ -46,6 +46,7 @@ func (r *Runner) push(ctx context.Context, vmID string, src io.Reader, remotePat
 		ok = false
 		return err
 	}
+	r.touch(vmID)
 	return nil
 }
 
@@ -80,6 +81,7 @@ func (r *Runner) Pull(ctx context.Context, vmID, remotePath string) ([]byte, err
 	if len(data) > MaxPullSize {
 		return nil, fmt.Errorf("exec: %s on %s exceeds the %d byte pull limit", remotePath, vmID, MaxPullSize)
 	}
+	r.touch(vmID)
 	return data, nil
 }
 

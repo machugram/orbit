@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -65,7 +66,10 @@ CREATE TABLE IF NOT EXISTS vms (
   state        TEXT NOT NULL,
   key_id       TEXT,
   created_at   INTEGER NOT NULL,
-  destroyed_at INTEGER
+  destroyed_at INTEGER,
+  ephemeral    INTEGER NOT NULL DEFAULT 0,
+  ttl_seconds  INTEGER NOT NULL DEFAULT 0,
+  last_used_at INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS microvms (
@@ -114,6 +118,10 @@ func Open(path string, passphrase []byte) (*Store, error) {
 		db.Close()
 		return nil, fmt.Errorf("vault: applying schema: %w", err)
 	}
+	if err := migrateVMColumns(db); err != nil {
+		db.Close()
+		return nil, err
+	}
 
 	key, err := unlock(db, passphrase)
 	if err != nil {
@@ -121,6 +129,22 @@ func Open(path string, passphrase []byte) (*Store, error) {
 		return nil, err
 	}
 	return &Store{db: db, key: key}, nil
+}
+
+// migrateVMColumns adds ephemeral TTL columns to older vaults.
+func migrateVMColumns(db *sql.DB) error {
+	for _, stmt := range []string{
+		`ALTER TABLE vms ADD COLUMN ephemeral INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE vms ADD COLUMN ttl_seconds INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE vms ADD COLUMN last_used_at INTEGER NOT NULL DEFAULT 0`,
+	} {
+		if _, err := db.Exec(stmt); err != nil {
+			if !strings.Contains(strings.ToLower(err.Error()), "duplicate column") {
+				return fmt.Errorf("vault: migrating vms: %w", err)
+			}
+		}
+	}
+	return nil
 }
 
 // unlock derives the master key, initializing salt and canary on first run.
@@ -340,9 +364,10 @@ func (s *Store) ListCredentials(namespace string) ([]CredentialInfo, error) {
 
 // CreateVM inserts a VM record in the "creating" state.
 func (s *Store) CreateVM(id, distro string) error {
+	now := time.Now().Unix()
 	_, err := s.db.Exec(
-		`INSERT INTO vms (id, distro, state, created_at) VALUES (?, ?, ?, ?)`,
-		id, distro, string(VMCreating), time.Now().Unix(),
+		`INSERT INTO vms (id, distro, state, created_at, last_used_at) VALUES (?, ?, ?, ?, ?)`,
+		id, distro, string(VMCreating), now, now,
 	)
 	if err != nil {
 		return fmt.Errorf("vault: creating vm record: %w", err)
@@ -354,10 +379,13 @@ func (s *Store) CreateVM(id, distro string) error {
 func (s *Store) GetVM(id string) (*VM, error) {
 	var vm VM
 	var state string
+	var ephemeral int
 	err := s.db.QueryRow(
-		`SELECT id, distro, state, COALESCE(key_id, ''), created_at, COALESCE(destroyed_at, 0)
+		`SELECT id, distro, state, COALESCE(key_id, ''), created_at, COALESCE(destroyed_at, 0),
+		        ephemeral, ttl_seconds, last_used_at
 		 FROM vms WHERE id = ?`, id,
-	).Scan(&vm.ID, &vm.Distro, &state, &vm.KeyID, &vm.CreatedAt, &vm.DestroyedAt)
+	).Scan(&vm.ID, &vm.Distro, &state, &vm.KeyID, &vm.CreatedAt, &vm.DestroyedAt,
+		&ephemeral, &vm.TTLSeconds, &vm.LastUsedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -365,13 +393,15 @@ func (s *Store) GetVM(id string) (*VM, error) {
 		return nil, fmt.Errorf("vault: reading vm record: %w", err)
 	}
 	vm.State = VMState(state)
+	vm.Ephemeral = ephemeral != 0
 	return &vm, nil
 }
 
 // ListVMs returns all VM records, newest first.
 func (s *Store) ListVMs() ([]VM, error) {
 	rows, err := s.db.Query(
-		`SELECT id, distro, state, COALESCE(key_id, ''), created_at, COALESCE(destroyed_at, 0)
+		`SELECT id, distro, state, COALESCE(key_id, ''), created_at, COALESCE(destroyed_at, 0),
+		        ephemeral, ttl_seconds, last_used_at
 		 FROM vms ORDER BY created_at DESC, id`,
 	)
 	if err != nil {
@@ -383,13 +413,49 @@ func (s *Store) ListVMs() ([]VM, error) {
 	for rows.Next() {
 		var vm VM
 		var state string
-		if err := rows.Scan(&vm.ID, &vm.Distro, &state, &vm.KeyID, &vm.CreatedAt, &vm.DestroyedAt); err != nil {
+		var ephemeral int
+		if err := rows.Scan(&vm.ID, &vm.Distro, &state, &vm.KeyID, &vm.CreatedAt, &vm.DestroyedAt,
+			&ephemeral, &vm.TTLSeconds, &vm.LastUsedAt); err != nil {
 			return nil, fmt.Errorf("vault: listing vms: %w", err)
 		}
 		vm.State = VMState(state)
+		vm.Ephemeral = ephemeral != 0
 		vms = append(vms, vm)
 	}
 	return vms, rows.Err()
+}
+
+// SetVMEphemeral marks a VM for idle auto-destroy with the given TTL.
+func (s *Store) SetVMEphemeral(id string, ttlSeconds int64) error {
+	if ttlSeconds <= 0 {
+		return fmt.Errorf("vault: ttl_seconds must be positive")
+	}
+	res, err := s.db.Exec(
+		`UPDATE vms SET ephemeral = 1, ttl_seconds = ? WHERE id = ?`,
+		ttlSeconds, id,
+	)
+	if err != nil {
+		return fmt.Errorf("vault: setting vm ephemeral: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// TouchVMLastUsed updates last_used_at for idle-TTL tracking.
+func (s *Store) TouchVMLastUsed(id string) error {
+	res, err := s.db.Exec(
+		`UPDATE vms SET last_used_at = ? WHERE id = ? AND state != ?`,
+		time.Now().Unix(), id, string(VMDestroyed),
+	)
+	if err != nil {
+		return fmt.Errorf("vault: touching vm: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrNotFound
+	}
+	return nil
 }
 
 // SetVMState updates a VM's lifecycle state. Transitioning to VMDestroyed

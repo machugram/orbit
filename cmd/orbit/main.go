@@ -80,12 +80,13 @@ func run() error {
 	// resolver handles microVM ids and chains to the vault resolver for the
 	// rest, so exec/exec_script/file_* work against either by name.
 	resolver := microvm.NewResolver(store, km, exec.VaultResolver(store, km))
+	runner := exec.NewRunnerWithResolver(resolver, exec.WithActivityTracker(exec.VaultActivity{Store: store}))
 	deps := &tools.Deps{
 		Vault:      store,
 		Keys:       km,
 		VMs:        vmm,
 		Prov:       vm.NewProvisioner(km, vmm),
-		Runner:     exec.NewRunnerWithResolver(resolver),
+		Runner:     runner,
 		Containers: container.NewManager(store),
 		MicroVMs:   microvm.NewManager(store, km),
 		Audit:      auditLog,
@@ -93,6 +94,11 @@ func run() error {
 
 	server := mcp.NewServer(&mcp.Implementation{Name: "orbit", Version: version}, nil)
 	tools.Register(server, deps)
+
+	// Ephemeral idle-TTL reaper (ROADMAP 2.1).
+	reaperCtx, reaperCancel := context.WithCancel(context.Background())
+	defer reaperCancel()
+	vm.NewReaper(vmm, runner).Start(reaperCtx)
 
 	// stdio transport: stdout is the protocol channel; logs go to stderr.
 	log.SetOutput(os.Stderr)

@@ -2,16 +2,20 @@ package tools
 
 import (
 	"context"
+	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/machugram/orbit/internal/vault"
+	"github.com/machugram/orbit/internal/vm"
 )
 
 type vmCreateArgs struct {
-	Distro   string `json:"distro" jsonschema:"OrbStack distro, optionally versioned (ubuntu, ubuntu:24.04, alpine, fedora, ...)"`
-	Name     string `json:"name,omitempty" jsonschema:"machine name; generated if omitted"`
-	Isolated *bool  `json:"isolated,omitempty" jsonschema:"create in OrbStack isolated mode (default true; no macOS file sharing)"`
+	Distro     string `json:"distro" jsonschema:"OrbStack distro, optionally versioned (ubuntu, ubuntu:24.04, alpine, fedora, ...)"`
+	Name       string `json:"name,omitempty" jsonschema:"machine name; generated if omitted"`
+	Isolated   *bool  `json:"isolated,omitempty" jsonschema:"create in OrbStack isolated mode (default true; no macOS file sharing)"`
+	Ephemeral  bool   `json:"ephemeral,omitempty" jsonschema:"auto-destroy when idle past ttl_seconds (default TTL 30m)"`
+	TTLSeconds int    `json:"ttl_seconds,omitempty" jsonschema:"idle TTL in seconds when ephemeral is true (default 1800)"`
 }
 
 type vmIDArgs struct {
@@ -45,8 +49,15 @@ func registerVMTools(server *mcp.Server, d *Deps) {
 		Description: "Create an isolated OrbStack Linux VM provisioned with a freshly generated SSH keypair owned by the agent. Blocks until the VM is running.",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, args vmCreateArgs) (*mcp.CallToolResult, any, error) {
 		isolated := args.Isolated == nil || *args.Isolated
-		rec, err := d.Prov.Create(ctx, args.Distro, args.Name, isolated)
-		d.log("vm_create", map[string]any{"distro": args.Distro, "name": args.Name, "isolated": isolated}, err)
+		opt := vm.CreateOptions{Ephemeral: args.Ephemeral}
+		if args.TTLSeconds > 0 {
+			opt.TTL = time.Duration(args.TTLSeconds) * time.Second
+		}
+		rec, err := d.Prov.Create(ctx, args.Distro, args.Name, isolated, opt)
+		d.log("vm_create", map[string]any{
+			"distro": args.Distro, "name": args.Name, "isolated": isolated,
+			"ephemeral": args.Ephemeral, "ttl_seconds": args.TTLSeconds,
+		}, err)
 		if err != nil {
 			return nil, nil, err
 		}
