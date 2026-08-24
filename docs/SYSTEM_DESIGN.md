@@ -177,6 +177,9 @@ agent calls vm_create(distro="alpine", name="worker-1")
   └─ returns {vm_id, state, key_id, ssh_user, distro}
 
 Warm bases (orbit-base-*) cannot be destroyed via vm_destroy.
+Ephemeral VMs (`ephemeral` + idle TTL) are reaped in-process; `last_used_at`
+updates on successful exec/file ops.
+Agent namespace (`ORBIT_AGENT_NAMESPACE`) soft-scopes VM/microVM rows; bases are shared.
 
 audit: {"tool":"vm_create","detail":{"name":"worker-1","distro":"alpine"},"ok":true}
 ```

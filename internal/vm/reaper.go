@@ -73,7 +73,7 @@ func (r *Reaper) RunOnce(ctx context.Context) error {
 		if !vm.Ephemeral || vm.TTLSeconds <= 0 {
 			continue
 		}
-		if IsBaseName(vm.ID) {
+		if vm.Namespace == vault.SharedNamespace || IsBaseName(vm.ID) {
 			continue
 		}
 		if vm.State == vault.VMDestroyed {

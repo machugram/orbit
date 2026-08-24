@@ -4,10 +4,12 @@
 //
 // Configuration (environment):
 //
-//	ORBIT_VAULT_PATH   vault location (default ~/.orbit/vault.db)
-//	ORBIT_AUDIT_PATH   audit log     (default ~/.orbit/audit.log)
-//	ORBIT_PASSPHRASE   vault passphrase; if unset, the macOS Keychain
+//	ORBIT_VAULT_PATH        vault location (default ~/.orbit/vault.db)
+//	ORBIT_AUDIT_PATH        audit log     (default ~/.orbit/audit.log)
+//	ORBIT_PASSPHRASE        vault passphrase; if unset, the macOS Keychain
 //	                        is used (auto-generated on first run)
+//	ORBIT_AGENT_NAMESPACE   soft isolation for VMs/microVMs/creds default
+//	                        namespace on one shared vault (default "default")
 package main
 
 import (
@@ -62,7 +64,8 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	store, err := vault.Open(vaultPath, pass)
+	agentNS := envOr("ORBIT_AGENT_NAMESPACE", vault.DefaultAgentNamespace)
+	store, err := vault.Open(vaultPath, pass, vault.WithAgentNamespace(agentNS))
 	if err != nil {
 		return err
 	}

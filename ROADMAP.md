@@ -130,11 +130,13 @@ one — it keeps secrets out of the transcript.
 (spec 9.4), stream incremental output via MCP progress notifications, or add
 an `exec_stream` that writes a growing log file the agent can `file_pull`.
 
-### 2.9 Multi-agent namespacing & locking — L
-Spec 12. Today all VMs/keys share one vault. For multiple agents on one host,
-scope `vms`/`credentials` by an agent namespace and document the locking model
-(WAL handles concurrent readers; writes serialize — see 1.5). Also consider
-advisory locks around `vm_create` to prevent name races.
+### 2.9 Multi-agent namespacing & locking — L — **done** (soft isolation)
+**Where:** [internal/vault/store.go](internal/vault/store.go) `ORBIT_AGENT_NAMESPACE`
+
+Process-wide agent namespace (default `default`) scopes VM/microVM rows and the
+default credential namespace. Warm bases use `SharedNamespace` so every agent can
+clone them. Soft isolation in one vault file — not separate encryption domains.
+Writes remain serialized via a single SQLite connection + WAL.
 
 ### 2.10 Master passphrase rotation — M
 **Where:** [internal/vault/store.go](internal/vault/store.go), [internal/keychain](internal/keychain)
@@ -212,5 +214,7 @@ shaped to graduate into it rather than be rewritten.
 
 ## Suggested next milestone
 
-**2.9 multi-agent namespaces** is next (scopes vault rows and the ephemeral reaper).
+Perf + lifecycle stack (SSH pool, base clone, ephemeral TTL, agent namespaces)
+is landed. Next high-value items: **2.7 secret_env on exec**, host-key TOFU,
+or **2.3 resource limits** on `vm_create`.
 
