@@ -2,22 +2,13 @@
 
 ## 1. Performance
 
-### 1.1 Cache a provisioned base image (biggest win) — L
-**Where:** [internal/vm/provisioner.go](internal/vm/provisioner.go), [internal/vm/distro.go](internal/vm/distro.go)
+### 1.1 Cache a provisioned base image (biggest win) — L — **done**
+**Where:** [internal/vm/provisioner.go](internal/vm/provisioner.go), [internal/vm/base.go](internal/vm/base.go)
 
-VM creation is dominated by `apt-get`/`dnf`/`apk` installing `openssh-server`
-on **every** `vm_create` — tens of seconds of network + package work. This is
-the single largest latency cost in the system.
-
-Provision one base machine per distro once, then clone it for subsequent
-creates so the package step is skipped. Approaches, in order of preference:
-- **Clone from a warm base VM** — keep a `orbit-base-<distro>` machine
-  provisioned and cloned on demand (sub-second vs ~30–60s).
-- **Snapshot/restore** once OrbStack exposes it in the CLI.
-
-Expected effect: `vm_create` cold start drops from ~30–60s to a few seconds.
-This is also the prerequisite for the spec's "~60s lifecycle" claim to
-hold across distros, not just cached-image Ubuntu.
+VM creation used to reinstall `openssh-server` on every `vm_create`. Orbit now
+keeps a warm `orbit-base-<distro>` machine (full provision once), then
+`orbctl clone`s it and injects only `authorized_keys` for the new key.
+`vm_destroy` refuses to delete warm bases.
 
 ### 1.2 SSH connection reuse / pooling — M — **done**
 **Where:** `acquire`/`release` in [internal/exec/pool.go](internal/exec/pool.go), [internal/exec/runner.go](internal/exec/runner.go)
@@ -222,6 +213,6 @@ shaped to graduate into it rather than be rewritten.
 
 ## Suggested next milestone
 
-**1.1 (base-image cache)** is next. SSH pooling (1.2) and single-conn
-`exec_script` (1.3) are done. After 1.1: ephemeral TTL (2.1), then
-multi-agent namespaces (2.9).
+**2.1 ephemeral TTL** is next (builds on clone + SSH `Invalidate`). Then
+**2.9 multi-agent namespaces**.
+

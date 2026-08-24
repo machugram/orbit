@@ -160,24 +160,23 @@ and stored in the Keychain.
 agent calls vm_create(distro="alpine", name="worker-1")
   │
   ├─ Provisioner.Create()
+  │    ├─ ensureBase("orbit-base-alpine")
+  │    │    └─ (cold) Create + full provision once per distro
+  │    │
   │    ├─ keys.Generate("vm-worker-1", "worker-1")
   │    │    └─ Ed25519 keygen → vault.SetCredential (encrypted)
   │    │
-  │    ├─ vm.Manager.Create() → orbctl create --isolated worker-1
-  │    │    └─ poll orbctl until state=running
+  │    ├─ vm.Manager.Clone(orbit-base-alpine → worker-1)
+  │    │    └─ orbctl clone; poll until running
   │    │
-  │    ├─ Provisioner.provision() (up to 5 retries, 3 min budget)
-  │    │    └─ orb -m worker-1 -u root sh -s [distro.go script] agent <pubkey>
-  │    │         ├─ apk add openssh
-  │    │         ├─ ssh-keygen -A
-  │    │         ├─ install authorized_keys
-  │    │         ├─ sed /etc/shadow  (unlock account)
-  │    │         ├─ rc-update add sshd; rc-service sshd start
-  │    │         └─ echo ORBIT_PROVISIONED
+  │    ├─ Provisioner.injectKey() (authorized_keys only; sshd already present)
+  │    │    └─ orb -m worker-1 -u root sh -s [keyInjectScript] agent <pubkey>
   │    │
   │    └─ vm.Manager.SetKey("worker-1", keyID)
   │
   └─ returns {vm_id, state, key_id, ssh_user, distro}
+
+Warm bases (orbit-base-*) cannot be destroyed via vm_destroy.
 
 audit: {"tool":"vm_create","detail":{"name":"worker-1","distro":"alpine"},"ok":true}
 ```

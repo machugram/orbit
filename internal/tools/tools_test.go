@@ -23,7 +23,7 @@ import (
 // fakeOrbctl simulates a healthy orbctl for tool-level tests.
 func fakeOrbctl(ctx context.Context, args ...string) ([]byte, []byte, error) {
 	switch args[0] {
-	case "create", "delete", "start", "stop":
+	case "create", "clone", "delete", "start", "stop":
 		return nil, nil, nil
 	case "info":
 		return []byte(fmt.Sprintf(`{"name":%q,"state":"running"}`, args[1])), nil, nil

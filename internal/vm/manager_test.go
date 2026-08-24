@@ -42,6 +42,11 @@ func (f *fakeOrb) run(ctx context.Context, args ...string) ([]byte, []byte, erro
 			return nil, []byte("boom"), errors.New("orbctl create failed")
 		}
 		return nil, nil, nil
+	case "clone":
+		if f.failCreate {
+			return nil, []byte("boom"), errors.New("orbctl clone failed")
+		}
+		return nil, nil, nil
 	case "info":
 		state := "running"
 		if len(f.infoStates) > 0 {
