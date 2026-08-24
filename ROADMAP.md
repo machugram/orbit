@@ -19,27 +19,19 @@ Expected effect: `vm_create` cold start drops from ~30–60s to a few seconds.
 This is also the prerequisite for the spec's "~60s lifecycle" claim to
 hold across distros, not just cached-image Ubuntu.
 
-### 1.2 SSH connection reuse / pooling — M
-**Where:** `connect()` in [internal/exec/runner.go](internal/exec/runner.go)
+### 1.2 SSH connection reuse / pooling — M — **done**
+**Where:** `acquire`/`release` in [internal/exec/pool.go](internal/exec/pool.go), [internal/exec/runner.go](internal/exec/runner.go)
 
-Every `exec`, `file_push`, `file_pull`, and `exec_script` opens a fresh TCP
-connection + SSH handshake, runs one operation, and tears it down. For an
-agent issuing a burst of commands against the same VM, the handshake cost
-dominates.
+Every `exec`, `file_push`, `file_pull`, and `exec_script` used to open a fresh TCP
+connection + SSH handshake, run one operation, and tear it down. A per-VM
+`*ssh.Client` pool (60s idle TTL, refcounted) now shares one connection across
+bursts. `Runner.Invalidate` drops the entry on `vm_stop` / `vm_destroy`.
 
-Add a per-VM `*ssh.Client` cache keyed by `vmID` with an idle-eviction timer
-(e.g. 60s) and reference counting so concurrent calls share one connection.
-Must handle: connection death (reconnect transparently), context
-cancellation, and eviction on `vm_stop`/`vm_destroy`.
+### 1.3 `exec_script` opens three connections for one logical op — S — **done**
+**Where:** `ExecScript` in [internal/exec/runner.go](internal/exec/runner.go)
 
-### 1.3 `exec_script` opens three connections for one logical op — S
-**Where:** `ExecScript` in [internal/exec/runner.go:170-175](internal/exec/runner.go)
-
-Today it connects three times: `PushBytes` (upload), `Exec` (run), and a
-deferred `Exec` (`rm`). Collapse to **one** connection: open a single client,
-SFTP the script, run it, and remove it — all over the same session/client.
-Naturally falls out of but is worth doing standalone. Cuts `exec_script`
-latency ~3×.
+`ExecScript` now acquires one pooled client and performs SFTP upload, run, and
+`rm` cleanup over that connection.
 
 ### 1.4 Stream `file_pull` instead of buffering in memory — S
 **Where:** `Pull` in [internal/exec/files.go:84](internal/exec/files.go)
@@ -230,7 +222,6 @@ shaped to graduate into it rather than be rewritten.
 
 ## Suggested next milestone
 
-If picking one short cycle for maximum value: **1.1 (base-image cache)** +
-**1.2/1.3 (connection reuse)**. Together they attack the two dominant
-latencies — VM cold start and per-command handshake — and make the spec's
-"sub-minute, ~60s lifecycle" claim true across all distros.
+**1.1 (base-image cache)** is next. SSH pooling (1.2) and single-conn
+`exec_script` (1.3) are done. After 1.1: ephemeral TTL (2.1), then
+multi-agent namespaces (2.9).

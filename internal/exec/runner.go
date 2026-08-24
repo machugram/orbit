@@ -7,10 +7,13 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"os"
+	"path"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/pkg/sftp"
 	"golang.org/x/crypto/ssh"
 
 	"github.com/machugram/orbit/internal/keys"
@@ -42,10 +45,17 @@ type Resolver interface {
 }
 
 // Runner executes commands on a target over SSH. How an id maps to an endpoint
-// and key is delegated to a Resolver.
+// and key is delegated to a Resolver. Clients are pooled per target id with an
+// idle TTL so bursts of exec/file ops reuse one handshake.
 type Runner struct {
 	resolver    Resolver
 	dialTimeout time.Duration
+	idleTTL     time.Duration
+	dialTCP     func(ctx context.Context, network, address string) (net.Conn, error)
+	onDial      func() // test hook: called once per new TCP dial
+
+	poolMu sync.Mutex
+	pool   map[string]*pooledClient
 }
 
 // RunnerOption customizes a Runner.
@@ -54,6 +64,9 @@ type RunnerOption func(*runnerConfig)
 type runnerConfig struct {
 	target      TargetResolver
 	dialTimeout time.Duration
+	idleTTL     time.Duration
+	dialTCP     func(ctx context.Context, network, address string) (net.Conn, error)
+	onDial      func()
 }
 
 // WithTarget overrides how VM ids resolve to SSH endpoints (used by tests
@@ -67,26 +80,52 @@ func WithDialTimeout(d time.Duration) RunnerOption {
 	return func(c *runnerConfig) { c.dialTimeout = d }
 }
 
+// WithIdleTTL overrides how long an unused pooled client is retained.
+func WithIdleTTL(d time.Duration) RunnerOption {
+	return func(c *runnerConfig) { c.idleTTL = d }
+}
+
+// WithDialTCP replaces the TCP dialer (used by tests).
+func WithDialTCP(f func(ctx context.Context, network, address string) (net.Conn, error)) RunnerOption {
+	return func(c *runnerConfig) { c.dialTCP = f }
+}
+
+// WithOnDial registers a callback invoked once per new TCP dial (tests).
+func WithOnDial(f func()) RunnerOption {
+	return func(c *runnerConfig) { c.onDial = f }
+}
+
 // NewRunner returns a Runner that connects to each VM's own sshd at
 // <vm>.orb.local:22 as the "agent" user, authenticating with the VM's
 // vault-held key.
 func NewRunner(store *vault.Store, km *keys.Manager, opts ...RunnerOption) *Runner {
 	cfg := newRunnerConfig(opts)
-	return &Runner{
-		resolver:    &vaultResolver{store: store, keys: km, target: cfg.target},
-		dialTimeout: cfg.dialTimeout,
-	}
+	return newRunner(&vaultResolver{store: store, keys: km, target: cfg.target}, cfg)
 }
 
 // NewRunnerWithResolver returns a Runner backed by a custom Resolver. Used to
 // drive targets that are not plain vault VMs (e.g. nested microVMs).
 func NewRunnerWithResolver(resolver Resolver, opts ...RunnerOption) *Runner {
-	cfg := newRunnerConfig(opts)
-	return &Runner{resolver: resolver, dialTimeout: cfg.dialTimeout}
+	return newRunner(resolver, newRunnerConfig(opts))
+}
+
+func newRunner(resolver Resolver, cfg runnerConfig) *Runner {
+	return &Runner{
+		resolver:    resolver,
+		dialTimeout: cfg.dialTimeout,
+		idleTTL:     cfg.idleTTL,
+		dialTCP:     cfg.dialTCP,
+		onDial:      cfg.onDial,
+		pool:        make(map[string]*pooledClient),
+	}
 }
 
 func newRunnerConfig(opts []RunnerOption) runnerConfig {
-	cfg := runnerConfig{target: defaultTarget, dialTimeout: DefaultDialTimeout}
+	cfg := runnerConfig{
+		target:      defaultTarget,
+		dialTimeout: DefaultDialTimeout,
+		idleTTL:     DefaultIdleTTL,
+	}
 	for _, opt := range opts {
 		opt(&cfg)
 	}
@@ -127,39 +166,6 @@ func (vr *vaultResolver) Resolve(ctx context.Context, vmID string) (ConnInfo, er
 	return ConnInfo{Addr: addr, User: user, Signer: signer}, nil
 }
 
-// connect resolves the target and dials its sshd. The decrypted private key
-// exists only in this process's memory for the lifetime of the connection.
-func (r *Runner) connect(ctx context.Context, vmID string) (*ssh.Client, error) {
-	info, err := r.resolver.Resolve(ctx, vmID)
-	if err != nil {
-		return nil, err
-	}
-	cfg := &ssh.ClientConfig{
-		User: info.User,
-		Auth: []ssh.AuthMethod{ssh.PublicKeys(info.Signer)},
-		// The host key is generated at first boot and not pre-distributed; all
-		// traffic stays on the local machine (loopback via .orb.local, or a
-		// carrier-local port for microVMs), so trust-on-connect is acceptable.
-		// Bounded, documented decision — see
-		// docs/adr/ADR-011-ssh-host-key-trust-model.md. TOFU pinning is
-		// ROADMAP §3, required before any target is reachable off-loopback.
-		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
-		Timeout:         r.dialTimeout,
-	}
-
-	d := net.Dialer{Timeout: r.dialTimeout}
-	conn, err := d.DialContext(ctx, "tcp", info.Addr)
-	if err != nil {
-		return nil, fmt.Errorf("exec: dialing %s: %w", info.Addr, err)
-	}
-	c, chans, reqs, err := ssh.NewClientConn(conn, info.Addr, cfg)
-	if err != nil {
-		conn.Close()
-		return nil, fmt.Errorf("exec: ssh handshake with %s as %s: %w", info.Addr, info.User, err)
-	}
-	return ssh.NewClient(c, chans, reqs), nil
-}
-
 // Exec runs a shell command on the VM and returns its output and exit code.
 // A non-zero exit code is reported in the Result, not as an error. Cancel
 // or time out via ctx.
@@ -168,25 +174,105 @@ func (r *Runner) Exec(ctx context.Context, vmID, command string) (*Result, error
 }
 
 func (r *Runner) exec(ctx context.Context, vmID, command string, stdin io.Reader) (*Result, error) {
-	client, err := r.connect(ctx, vmID)
+	client, release, err := r.acquire(ctx, vmID)
 	if err != nil {
 		return nil, err
 	}
-	// closeClient is idempotent: both the ctx-cancellation hook and the
-	// deferred teardown call it, but the connection is closed exactly once.
-	var closeOnce sync.Once
-	closeClient := func() { closeOnce.Do(func() { client.Close() }) }
-	// Tear the connection down if ctx ends so session.Run unblocks. stop()
-	// cancels the hook on the normal path so it never runs after we return.
-	stop := context.AfterFunc(ctx, closeClient)
-	defer stop()
-	defer closeClient()
+	ok := true
+	defer func() { release(ok) }()
 
+	session, err := client.NewSession()
+	if err != nil {
+		ok = false
+		return nil, fmt.Errorf("exec: opening session: %w", err)
+	}
+	defer session.Close()
+
+	// Cancel unblocks session.Run by closing the session, not the pooled client.
+	stop := context.AfterFunc(ctx, func() { _ = session.Close() })
+	defer stop()
+
+	var stdout, stderr bytes.Buffer
+	session.Stdout = &stdout
+	session.Stderr = &stderr
+	if stdin != nil {
+		session.Stdin = stdin
+	}
+
+	res := &Result{VMID: vmID}
+	err = session.Run(command)
+	res.Stdout = stdout.String()
+	res.Stderr = stderr.String()
+
+	var exitErr *ssh.ExitError
+	switch {
+	case err == nil:
+	case errors.As(err, &exitErr):
+		res.ExitCode = exitErr.ExitStatus()
+	default:
+		ok = false
+		if ctx.Err() != nil {
+			return nil, fmt.Errorf("exec: command on %s: %w", vmID, ctx.Err())
+		}
+		return nil, fmt.Errorf("exec: command on %s: %w", vmID, err)
+	}
+	return res, nil
+}
+
+// allowedInterpreters bounds the exec_script interpreter to a fixed set, so a
+// caller-supplied value cannot smuggle extra arguments or commands into the
+// shell line that runs the uploaded script.
+var allowedInterpreters = map[string]bool{
+	"bash": true, "sh": true, "zsh": true, "dash": true, "ash": true,
+	"python3": true, "python": true, "perl": true, "ruby": true, "node": true,
+}
+
+// ExecScript uploads a script to the VM, runs it with the interpreter
+// (default "bash"), and removes it afterwards — all over one pooled SSH
+// connection (the exec_script MCP tool).
+func (r *Runner) ExecScript(ctx context.Context, vmID, script, interpreter string) (*Result, error) {
+	if interpreter == "" {
+		interpreter = "bash"
+	}
+	if !allowedInterpreters[interpreter] {
+		return nil, fmt.Errorf("exec: unsupported interpreter %q", interpreter)
+	}
+
+	client, release, err := r.acquire(ctx, vmID)
+	if err != nil {
+		return nil, err
+	}
+	ok := true
+	defer func() { release(ok) }()
+
+	remote := fmt.Sprintf("/tmp/orbit-%s.script", randToken())
+	if err := r.pushOn(client, vmID, bytes.NewReader([]byte(script)), remote, 0o700); err != nil {
+		ok = false
+		return nil, err
+	}
+	defer func() {
+		// Best-effort cleanup on the same client; ignore errors.
+		_, _ = r.runOn(ctx, client, vmID, "rm -f "+shellQuote(remote), nil)
+	}()
+
+	res, err := r.runOn(ctx, client, vmID, interpreter+" "+shellQuote(remote), nil)
+	if err != nil {
+		ok = false
+		return nil, err
+	}
+	return res, nil
+}
+
+// runOn opens a session on an already-acquired client.
+func (r *Runner) runOn(ctx context.Context, client *ssh.Client, vmID, command string, stdin io.Reader) (*Result, error) {
 	session, err := client.NewSession()
 	if err != nil {
 		return nil, fmt.Errorf("exec: opening session: %w", err)
 	}
 	defer session.Close()
+
+	stop := context.AfterFunc(ctx, func() { _ = session.Close() })
+	defer stop()
 
 	var stdout, stderr bytes.Buffer
 	session.Stdout = &stdout
@@ -214,37 +300,34 @@ func (r *Runner) exec(ctx context.Context, vmID, command string, stdin io.Reader
 	return res, nil
 }
 
-// allowedInterpreters bounds the exec_script interpreter to a fixed set, so a
-// caller-supplied value cannot smuggle extra arguments or commands into the
-// shell line that runs the uploaded script.
-var allowedInterpreters = map[string]bool{
-	"bash": true, "sh": true, "zsh": true, "dash": true, "ash": true,
-	"python3": true, "python": true, "perl": true, "ruby": true, "node": true,
-}
+// pushOn uploads via SFTP on an already-acquired client.
+func (r *Runner) pushOn(client *ssh.Client, vmID string, src io.Reader, remotePath string, mode os.FileMode) error {
+	sftpc, err := sftp.NewClient(client)
+	if err != nil {
+		return fmt.Errorf("exec: starting sftp on %s: %w", vmID, err)
+	}
+	defer sftpc.Close()
 
-// ExecScript uploads a script to the VM, runs it with the interpreter
-// (default "bash"), and removes it afterwards (the exec_script MCP tool).
-func (r *Runner) ExecScript(ctx context.Context, vmID, script, interpreter string) (*Result, error) {
-	if interpreter == "" {
-		interpreter = "bash"
+	if dir := path.Dir(remotePath); dir != "." && dir != "/" {
+		if err := sftpc.MkdirAll(dir); err != nil {
+			return fmt.Errorf("exec: creating %s on %s: %w", dir, vmID, err)
+		}
 	}
-	if !allowedInterpreters[interpreter] {
-		return nil, fmt.Errorf("exec: unsupported interpreter %q", interpreter)
+	dst, err := sftpc.Create(remotePath)
+	if err != nil {
+		return fmt.Errorf("exec: creating %s on %s: %w", remotePath, vmID, err)
 	}
-	remote := fmt.Sprintf("/tmp/orbit-%s.script", randToken())
-	if err := r.PushBytes(ctx, vmID, []byte(script), remote, 0o700); err != nil {
-		return nil, err
+	if _, err := io.Copy(dst, src); err != nil {
+		dst.Close()
+		return fmt.Errorf("exec: uploading to %s: %w", vmID, err)
 	}
-	// Clean up with a context detached from ctx: if the script run was
-	// cancelled or timed out, the cleanup still needs a live context to dial,
-	// otherwise the temp file would linger on the VM.
-	defer func() {
-		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), r.dialTimeout)
-		defer cancel()
-		r.Exec(cleanupCtx, vmID, "rm -f "+shellQuote(remote)) // best-effort cleanup
-	}()
-
-	return r.Exec(ctx, vmID, interpreter+" "+shellQuote(remote))
+	if err := dst.Close(); err != nil {
+		return fmt.Errorf("exec: uploading to %s: %w", vmID, err)
+	}
+	if err := sftpc.Chmod(remotePath, mode); err != nil {
+		return fmt.Errorf("exec: chmod %s on %s: %w", remotePath, vmID, err)
+	}
+	return nil
 }
 
 // shellQuote single-quotes s for safe interpolation into a shell command.

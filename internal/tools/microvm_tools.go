@@ -108,6 +108,9 @@ func registerMicroVMTools(server *mcp.Server, d *Deps) {
 		Description: "Stop a running microVM's QEMU process, leaving its disk staged for a later microvm_start.",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, args microvmIDArgs) (*mcp.CallToolResult, any, error) {
 		err := d.MicroVMs.Stop(ctx, args.Name)
+		if d.Runner != nil {
+			d.Runner.Invalidate(args.Name)
+		}
 		d.log("microvm_stop", map[string]any{"name": args.Name}, err)
 		if err != nil {
 			return nil, nil, err
@@ -120,6 +123,9 @@ func registerMicroVMTools(server *mcp.Server, d *Deps) {
 		Description: "Destroy a microVM: kill its QEMU process and remove its working directory on the carrier, optionally purging its SSH keypair.",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, args microvmDestroyArgs) (*mcp.CallToolResult, any, error) {
 		err := d.MicroVMs.Destroy(ctx, args.Name, args.PurgeKey)
+		if d.Runner != nil {
+			d.Runner.Invalidate(args.Name)
+		}
 		d.log("microvm_destroy", map[string]any{"name": args.Name, "purge_key": args.PurgeKey}, err)
 		if err != nil {
 			return nil, nil, err

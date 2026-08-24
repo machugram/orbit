@@ -86,6 +86,9 @@ func registerVMTools(server *mcp.Server, d *Deps) {
 		Description: "Gracefully stop an agent-managed VM.",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, args vmIDArgs) (*mcp.CallToolResult, any, error) {
 		err := d.VMs.Stop(ctx, args.VMID)
+		if d.Runner != nil {
+			d.Runner.Invalidate(args.VMID)
+		}
 		d.log("vm_stop", map[string]any{"vm_id": args.VMID}, err)
 		if err != nil {
 			return nil, nil, err
@@ -98,6 +101,9 @@ func registerVMTools(server *mcp.Server, d *Deps) {
 		Description: "Destroy an agent-managed VM, optionally purging its SSH keypair from the vault.",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, args vmDestroyArgs) (*mcp.CallToolResult, any, error) {
 		err := d.VMs.Destroy(ctx, args.VMID, args.PurgeKeys)
+		if d.Runner != nil {
+			d.Runner.Invalidate(args.VMID)
+		}
 		d.log("vm_destroy", map[string]any{"vm_id": args.VMID, "purge_keys": args.PurgeKeys}, err)
 		if err != nil {
 			return nil, nil, err
