@@ -2,6 +2,7 @@
 
 | Document | What it covers |
 |---|---|
+| [USAGE.md](USAGE.md) | Tools, resources, configuration, secrets, layout, tests |
 | [SYSTEM_DESIGN.md](SYSTEM_DESIGN.md) | Component responsibilities, data flows, security model, concurrency |
 | [../orbit-presentation.html](../orbit-presentation.html) | Recruiter / technical walkthrough (open in a browser) |
 | [adr/ADR-001](adr/ADR-001-go-over-typescript.md) | Why Go instead of TypeScript |
@@ -16,8 +17,8 @@
 | [adr/ADR-010](adr/ADR-010-vault-passphrase-keychain.md) | Vault passphrase via macOS Keychain with env-var override |
 | [adr/ADR-011](adr/ADR-011-ssh-host-key-trust-model.md) | Trust-on-connect for loopback SSH; pinning deferred |
 | [adr/ADR-012](adr/ADR-012-nested-microvm-ebpf-isolation.md) | Nested QEMU/TCG guests with their own kernel for eBPF |
+| [adr/ADR-013](adr/ADR-013-typed-state-schema-and-diagnostics.md) | Typed `converge` state; diagnostics later became `orbit://` resources |
+| [adr/ADR-014](adr/ADR-014-exec-secret-env.md) | Vault values injected over SSH stdin for `run` |
+| [adr/ADR-015](adr/ADR-015-job-shaped-mcp.md) | Job-shaped MCP tools; inventory and diagnostics are resources |
 
-The original brief (TypeScript-era, cloud-init, SSH multiplexer) is
-[ORBIT_SPEC.md](../ORBIT_SPEC.md); this tree and the ADRs are the source of
-truth for what shipped. For the performance and feature backlog see
-[../ROADMAP.md](../ROADMAP.md).
+[USAGE.md](USAGE.md) and [ADR-015](adr/ADR-015-job-shaped-mcp.md) describe the agent-facing surface. Earlier ADRs keep the tool names they introduced; the mechanisms they record still stand.

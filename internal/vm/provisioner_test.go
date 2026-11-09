@@ -63,19 +63,16 @@ func testProvisioner(t *testing.T, f *fakeOrb, fe *fakeExecer) (*Provisioner, *v
 
 func TestProvisionScriptIsDistroAgnostic(t *testing.T) {
 	s := provisionScript()
-	// Package managers across the supported families.
 	for _, pm := range []string{"apt-get", "dnf", "yum", "zypper", "pacman", "apk", "xbps-install"} {
 		if !strings.Contains(s, pm) {
 			t.Errorf("provision script missing package manager branch for %q", pm)
 		}
 	}
-	// Init systems: systemd, OpenRC, runit.
 	for _, init := range []string{"systemctl", "rc-update", "/etc/sv/sshd"} {
 		if !strings.Contains(s, init) {
 			t.Errorf("provision script missing init branch for %q", init)
 		}
 	}
-	// The critical, easy-to-forget steps.
 	if !strings.Contains(s, "ssh-keygen -A") {
 		t.Error("provision script does not generate host keys")
 	}
@@ -87,7 +84,26 @@ func TestProvisionScriptIsDistroAgnostic(t *testing.T) {
 	}
 }
 
-func TestProvisionerCreateProvisionsAndLinksKey(t *testing.T) {
+func TestKeyInjectScriptSkipsPackages(t *testing.T) {
+	s := keyInjectScript()
+	if strings.Contains(s, "apt-get") || strings.Contains(s, "apk add") {
+		t.Error("key inject script should not install packages")
+	}
+	if !strings.Contains(s, "authorized_keys") {
+		t.Error("key inject script missing authorized_keys")
+	}
+}
+
+func TestBaseName(t *testing.T) {
+	if got := BaseName("ubuntu:24.04"); got != "orbit-base-ubuntu-24.04" {
+		t.Errorf("BaseName = %q", got)
+	}
+	if !IsBaseName("orbit-base-alpine") {
+		t.Error("expected IsBaseName")
+	}
+}
+
+func TestProvisionerCreateUsesBaseThenClone(t *testing.T) {
 	f := &fakeOrb{}
 	fe := &fakeExecer{}
 	p, s := testProvisioner(t, f, fe)
@@ -100,37 +116,89 @@ func TestProvisionerCreateProvisionsAndLinksKey(t *testing.T) {
 		t.Fatal("VM record has no key linked")
 	}
 
-	// Provisioning must run exactly once, as root, with the agent user and
-	// the generated public key as positional args.
-	if fe.count() != 1 {
-		t.Fatalf("provisioned %d times, want 1", fe.count())
+	// Cold path: create base, then clone agent.
+	if c := f.lastCall("create"); c == nil || c[len(c)-1] != BaseName("alpine") {
+		t.Fatalf("create args = %v, want base %s", c, BaseName("alpine"))
 	}
-	call := fe.calls[0]
-	if call.vm != "prov-1" || call.user != "root" {
-		t.Errorf("provision ran as %s@%s, want root@prov-1", call.user, call.vm)
-	}
-	if len(call.args) != 2 || call.args[0] != "agent" {
-		t.Fatalf("provision args = %v, want [agent <pubkey>]", call.args)
+	if c := f.lastCall("clone"); c == nil || !slicesEqual(c, []string{"clone", BaseName("alpine"), "prov-1"}) {
+		t.Fatalf("clone args = %v", c)
 	}
 
-	// The pubkey handed to the script must match the vault key for the VM.
+	// Two scripts: full provision on base, key inject on clone.
+	if fe.count() != 2 {
+		t.Fatalf("scripts ran %d times, want 2", fe.count())
+	}
+	if fe.calls[0].vm != BaseName("alpine") {
+		t.Errorf("first script on %s, want base", fe.calls[0].vm)
+	}
+	if !strings.Contains(fe.calls[0].script, "apk") {
+		t.Error("first script should be full provision")
+	}
+	if fe.calls[1].vm != "prov-1" {
+		t.Errorf("second script on %s, want prov-1", fe.calls[1].vm)
+	}
+	if strings.Contains(fe.calls[1].script, "apk add") {
+		t.Error("clone path should use key-inject script, not package install")
+	}
+
 	km := keys.NewManager(s)
 	kp, err := km.Load(KeyLabel("prov-1"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	wantPub, _ := kp.AuthorizedKey()
-	if call.args[1] != wantPub {
-		t.Errorf("provision pubkey arg = %q, want %q", call.args[1], wantPub)
+	if fe.calls[1].args[1] != wantPub {
+		t.Errorf("inject pubkey = %q, want %q", fe.calls[1].args[1], wantPub)
 	}
+}
 
-	byID, err := km.LoadByID(rec.KeyID)
-	if err != nil {
+func TestProvisionerSecondCreateReusesBase(t *testing.T) {
+	f := &fakeOrb{}
+	fe := &fakeExecer{}
+	p, _ := testProvisioner(t, f, fe)
+
+	if _, err := p.Create(context.Background(), "alpine", "a1", true); err != nil {
 		t.Fatal(err)
 	}
-	if !kp.Private.Equal(byID.Private) {
-		t.Error("vault key_id does not point at the generated private key")
+	createsBefore := countCalls(f, "create")
+	scriptsBefore := fe.count()
+
+	if _, err := p.Create(context.Background(), "alpine", "a2", true); err != nil {
+		t.Fatal(err)
 	}
+	if countCalls(f, "create") != createsBefore {
+		t.Error("second create should not orbctl-create another base")
+	}
+	if fe.count() != scriptsBefore+1 {
+		t.Fatalf("second create scripts = %d, want %d (key inject only)", fe.count(), scriptsBefore+1)
+	}
+	if c := f.lastCall("clone"); c == nil || c[2] != "a2" {
+		t.Fatalf("second clone = %v", c)
+	}
+}
+
+func countCalls(f *fakeOrb, cmd string) int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	n := 0
+	for _, c := range f.calls {
+		if c[0] == cmd {
+			n++
+		}
+	}
+	return n
+}
+
+func slicesEqual(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func TestProvisionerCleansUpOnCreateFailure(t *testing.T) {
@@ -162,23 +230,22 @@ func TestProvisionerCleansUpOnProvisionFailure(t *testing.T) {
 		t.Errorf("expected provisioning to retry, got %d calls", fe.count())
 	}
 
-	// Key revoked and VM torn down — no orphans of either kind.
 	km := keys.NewManager(s)
-	if _, err := km.Load(KeyLabel("fail-prov")); !errors.Is(err, vault.ErrNotFound) {
-		t.Errorf("orphaned key left in vault: %v", err)
+	if _, err := km.Load(KeyLabel(BaseName("void"))); !errors.Is(err, vault.ErrNotFound) {
+		t.Errorf("orphaned base key left in vault: %v", err)
 	}
-	vmRec, err := s.GetVM("fail-prov")
+	vmRec, err := s.GetVM(BaseName("void"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if vmRec.State != vault.VMDestroyed {
-		t.Errorf("VM left in state %s after provision failure, want destroyed", vmRec.State)
+		t.Errorf("base left in state %s after provision failure, want destroyed", vmRec.State)
 	}
 }
 
 func TestProvisionerFailsWhenScriptIncomplete(t *testing.T) {
 	f := &fakeOrb{}
-	fe := &fakeExecer{noDone: true} // exits 0 but never prints the marker
+	fe := &fakeExecer{noDone: true}
 	p, _ := testProvisioner(t, f, fe)
 
 	if _, err := p.Create(context.Background(), "ubuntu", "incomplete", true); err == nil {
@@ -194,5 +261,30 @@ func TestProvisionerGeneratesName(t *testing.T) {
 	}
 	if !strings.HasPrefix(rec.ID, "agent-") {
 		t.Errorf("generated name = %q", rec.ID)
+	}
+}
+
+func TestDestroyRefusesBase(t *testing.T) {
+	f := &fakeOrb{}
+	m, s := testManager(t, f)
+	base := BaseName("alpine")
+	if err := s.CreateVM(base, "alpine"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetVMState(base, vault.VMRunning); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Destroy(context.Background(), base, true); err == nil {
+		t.Fatal("expected refuse destroy of base")
+	}
+	if f.lastCall("delete") != nil {
+		t.Error("orbctl delete should not run for base")
+	}
+}
+
+func TestProvisionerRejectsBaseName(t *testing.T) {
+	p, _ := testProvisioner(t, &fakeOrb{}, &fakeExecer{})
+	if _, err := p.Create(context.Background(), "alpine", BaseName("alpine"), true); err == nil {
+		t.Fatal("expected reject reserved base name")
 	}
 }

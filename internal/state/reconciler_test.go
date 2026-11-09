@@ -57,7 +57,7 @@ func testReconciler(t *testing.T) (*Reconciler, *vault.Store) {
 
 	fakeOrbctl := func(ctx context.Context, args ...string) ([]byte, []byte, error) {
 		switch args[0] {
-		case "create", "delete", "start", "stop":
+		case "create", "clone", "delete", "start", "stop":
 			return nil, nil, nil
 		case "info":
 			return []byte(`{"name":"` + args[1] + `","state":"running"}`), nil, nil

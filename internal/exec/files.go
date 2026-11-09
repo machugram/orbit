@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path"
 
 	"github.com/pkg/sftp"
 )
@@ -37,71 +36,53 @@ func (r *Runner) PushBytes(ctx context.Context, vmID string, data []byte, remote
 }
 
 func (r *Runner) push(ctx context.Context, vmID string, src io.Reader, remotePath string, mode os.FileMode) error {
-	client, sftpc, err := r.sftp(ctx, vmID)
+	client, release, err := r.acquire(ctx, vmID)
 	if err != nil {
 		return err
 	}
-	defer client.Close()
-	defer sftpc.Close()
-
-	if dir := path.Dir(remotePath); dir != "." && dir != "/" {
-		if err := sftpc.MkdirAll(dir); err != nil {
-			return fmt.Errorf("exec: creating %s on %s: %w", dir, vmID, err)
-		}
+	ok := true
+	defer func() { release(ok) }()
+	if err := r.pushOn(client, vmID, src, remotePath, mode); err != nil {
+		ok = false
+		return err
 	}
-	dst, err := sftpc.Create(remotePath)
-	if err != nil {
-		return fmt.Errorf("exec: creating %s on %s: %w", remotePath, vmID, err)
-	}
-	if _, err := io.Copy(dst, src); err != nil {
-		dst.Close()
-		return fmt.Errorf("exec: uploading to %s: %w", vmID, err)
-	}
-	if err := dst.Close(); err != nil {
-		return fmt.Errorf("exec: uploading to %s: %w", vmID, err)
-	}
-	if err := sftpc.Chmod(remotePath, mode); err != nil {
-		return fmt.Errorf("exec: chmod %s on %s: %w", remotePath, vmID, err)
-	}
+	r.touch(vmID)
 	return nil
 }
 
 // Pull downloads a file from the VM, capped at MaxPullSize.
 func (r *Runner) Pull(ctx context.Context, vmID, remotePath string) ([]byte, error) {
-	client, sftpc, err := r.sftp(ctx, vmID)
+	client, release, err := r.acquire(ctx, vmID)
 	if err != nil {
 		return nil, err
 	}
-	defer client.Close()
+	ok := true
+	defer func() { release(ok) }()
+
+	sftpc, err := sftp.NewClient(client)
+	if err != nil {
+		ok = false
+		return nil, fmt.Errorf("exec: starting sftp on %s: %w", vmID, err)
+	}
 	defer sftpc.Close()
 
 	f, err := sftpc.Open(remotePath)
 	if err != nil {
+		ok = false
 		return nil, fmt.Errorf("exec: opening %s on %s: %w", remotePath, vmID, err)
 	}
 	defer f.Close()
 
 	data, err := io.ReadAll(io.LimitReader(f, MaxPullSize+1))
 	if err != nil {
+		ok = false
 		return nil, fmt.Errorf("exec: downloading %s from %s: %w", remotePath, vmID, err)
 	}
 	if len(data) > MaxPullSize {
 		return nil, fmt.Errorf("exec: %s on %s exceeds the %d byte pull limit", remotePath, vmID, MaxPullSize)
 	}
+	r.touch(vmID)
 	return data, nil
-}
-
-func (r *Runner) sftp(ctx context.Context, vmID string) (closer interface{ Close() error }, c *sftp.Client, err error) {
-	client, err := r.connect(ctx, vmID)
-	if err != nil {
-		return nil, nil, err
-	}
-	sftpc, err := sftp.NewClient(client)
-	if err != nil {
-		client.Close()
-		return nil, nil, fmt.Errorf("exec: starting sftp on %s: %w", vmID, err)
-	}
-	return client, sftpc, nil
 }
 
 func randToken() string {

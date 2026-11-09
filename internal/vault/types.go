@@ -30,6 +30,10 @@ type VM struct {
 	KeyID       string // credentials.id of the VM's SSH keypair, "" if none
 	CreatedAt   int64  // unix seconds
 	DestroyedAt int64  // unix seconds, 0 if not destroyed
+	Ephemeral   bool   // auto-destroy when idle past TTL
+	TTLSeconds  int64  // idle TTL when Ephemeral; 0 if not ephemeral
+	LastUsedAt  int64  // unix seconds; 0 means fall back to CreatedAt
+	Namespace   string // agent namespace (SharedNamespace for warm bases)
 }
 
 // MicroVM is a record of a nested QEMU guest running inside a carrier OrbStack
@@ -46,6 +50,7 @@ type MicroVM struct {
 	State       VMState // reuses the VM lifecycle states
 	CreatedAt   int64   // unix seconds
 	DestroyedAt int64   // unix seconds, 0 if not destroyed
+	Namespace   string  // agent namespace
 }
 
 // SetOption customizes a credential written via SetCredential.

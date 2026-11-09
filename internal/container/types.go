@@ -88,14 +88,18 @@ type BuildSpec struct {
 	BuildArgs   map[string]string // --build-arg
 }
 
+// MaxTransfer caps file copies into and out of a container.
+const MaxTransfer = 32 << 20 // 32 MiB
+
 var (
-	nameRe    = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$`)
-	imageRe   = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_./:@-]{0,255}$`)
-	envRe     = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
-	portRe    = regexp.MustCompile(`^(\d{1,3}(\.\d{1,3}){3}:)?(\d{1,5}:)?\d{1,5}(/(tcp|udp))?$`)
-	tagRe     = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_./:-]{0,255}$`)
-	projectRe = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,62}$`)
-	serviceRe = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,62}$`)
+	nameRe        = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$`)
+	imageRe       = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_./:@-]{0,255}$`)
+	envRe         = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+	portRe        = regexp.MustCompile(`^(\d{1,3}(\.\d{1,3}){3}:)?(\d{1,5}:)?\d{1,5}(/(tcp|udp))?$`)
+	tagRe         = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_./:-]{0,255}$`)
+	projectRe     = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,62}$`)
+	serviceRe     = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,62}$`)
+	interpreterRe = regexp.MustCompile(`^[a-zA-Z][a-zA-Z0-9]*$`)
 )
 
 func (s *RunSpec) validate() error {

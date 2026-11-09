@@ -125,6 +125,46 @@ func TestRunSecretEnvNeverHitsArgv(t *testing.T) {
 	}
 }
 
+func TestRunOnceSecretEnvNeverHitsArgv(t *testing.T) {
+	rec := &recorder{stdout: "ok\n"}
+	m, s := newTestManager(t, rec)
+	if _, err := s.SetCredential("default", "db-pw", []byte("hunter2-SECRET"), nil...); err != nil {
+		t.Fatal(err)
+	}
+	res, err := m.RunOnce(context.Background(), RunSpec{
+		Image:     "alpine",
+		Command:   "echo hi",
+		SecretEnv: map[string]string{"TOKEN": "db-pw"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.ExitCode != 0 || !strings.Contains(res.Stdout, "ok") {
+		t.Fatalf("result = %+v", res)
+	}
+	inv := rec.last()
+	joined := strings.Join(inv.Args, " ")
+	if !strings.Contains(joined, "--rm") || strings.Contains(joined, "hunter2-SECRET") {
+		t.Fatalf("argv = %v", inv.Args)
+	}
+	if inv.Env["TOKEN"] != "hunter2-SECRET" {
+		t.Fatalf("subprocess env = %v", inv.Env)
+	}
+}
+
+func TestComposeDownProjectNeedsNoFile(t *testing.T) {
+	rec := &recorder{}
+	m, _ := newTestManager(t, rec)
+	if err := m.ComposeDownProject(context.Background(), "demo"); err != nil {
+		t.Fatal(err)
+	}
+	inv := rec.last()
+	got := strings.Join(inv.Args, " ")
+	if got != "compose -p demo down" {
+		t.Fatalf("args = %v", inv.Args)
+	}
+}
+
 func TestRunMissingSecretFails(t *testing.T) {
 	rec := &recorder{}
 	m, _ := newTestManager(t, rec)

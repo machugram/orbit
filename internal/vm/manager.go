@@ -85,8 +85,8 @@ func (m *Manager) Create(ctx context.Context, spec CreateSpec) (*vault.VM, error
 		username = "agent"
 	}
 
-	// Record first: the PK constraint rejects duplicate names before any
-	// orbctl side effects.
+	// Record first: a live name is rejected before any orbctl side effects.
+	// A destroyed row is reset inside CreateVM so the name can be used again.
 	if err := m.store.CreateVM(name, spec.Distro); err != nil {
 		return nil, err
 	}
@@ -193,9 +193,44 @@ func (m *Manager) Stop(ctx context.Context, id string) error {
 	return m.store.SetVMState(id, vault.VMStopped)
 }
 
+// Clone copies an existing machine via `orbctl clone` and records the
+// destination in the vault. Used to spawn agent VMs from a warm base.
+func (m *Manager) Clone(ctx context.Context, source, name, distro string) (*vault.VM, error) {
+	if !nameRe.MatchString(name) {
+		return nil, fmt.Errorf("vm: invalid machine name %q", name)
+	}
+	if !nameRe.MatchString(source) {
+		return nil, fmt.Errorf("vm: invalid source name %q", source)
+	}
+	if err := m.store.CreateVM(name, distro); err != nil {
+		return nil, err
+	}
+	if _, _, err := m.run(ctx, "clone", source, name); err != nil {
+		m.store.SetVMState(name, vault.VMDestroyed)
+		return nil, err
+	}
+	// Clones may start stopped depending on OrbStack version; ensure running.
+	if state, err := m.State(ctx, name); err == nil && state != "running" {
+		if _, _, err := m.run(ctx, "start", name); err != nil {
+			return nil, err
+		}
+	}
+	if err := m.waitState(ctx, name, "running"); err != nil {
+		return nil, err
+	}
+	if err := m.store.SetVMState(name, vault.VMRunning); err != nil {
+		return nil, err
+	}
+	return m.store.GetVM(name)
+}
+
 // Destroy deletes the machine and marks the record destroyed. With
 // purgeKeys, the associated SSH key credential is deleted from the vault.
+// Warm base machines (orbit-base-*) cannot be destroyed through this path.
 func (m *Manager) Destroy(ctx context.Context, id string, purgeKeys bool) error {
+	if err := rejectBaseDestroy(id); err != nil {
+		return err
+	}
 	rec, err := m.store.GetVM(id)
 	if err != nil {
 		return err

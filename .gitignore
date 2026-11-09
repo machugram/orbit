@@ -19,3 +19,10 @@ coverage.*
 *.swp
 .idea/
 .vscode/
+
+# Local writing, not part of the product
+/community-notes/
+Orbit_Engineering_Brief_for_SWE_SRE.docx
+/ORBIT_SPEC.md
+/ROADMAP.md
+/RELEASE.md

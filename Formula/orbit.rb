@@ -2,7 +2,6 @@
 #
 # Do not `brew install` this file until a GitHub Release exists and the sha256
 # values below are replaced with the real checksums from that release.
-# See RELEASE.md.
 class Orbit < Formula
   desc "MCP server for autonomous agent infrastructure on OrbStack"
   homepage "https://github.com/machugram/orbit"

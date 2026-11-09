@@ -73,7 +73,9 @@ type ApplyResult struct {
 	Summary string   `json:"summary"`
 }
 
-func (s *State) validate() error {
+// Validate checks a State supplied either by ParseState or by typed MCP tool
+// arguments before reconciliation runs.
+func (s *State) Validate() error {
 	seen := map[string]bool{}
 	for _, v := range s.VMs {
 		if v.Name == "" {
@@ -121,7 +123,7 @@ func ParseState(data []byte) (*State, error) {
 	if err := json.Unmarshal(data, &s); err != nil {
 		return nil, fmt.Errorf("state: invalid JSON: %w", err)
 	}
-	if err := s.validate(); err != nil {
+	if err := s.Validate(); err != nil {
 		return nil, err
 	}
 	return &s, nil

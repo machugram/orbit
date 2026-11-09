@@ -9,9 +9,10 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
-	_ "modernc.org/sqlite"
+	"modernc.org/sqlite"
 )
 
 // newID returns a random 128-bit hex identifier. This matches the crypto/rand
@@ -65,7 +66,11 @@ CREATE TABLE IF NOT EXISTS vms (
   state        TEXT NOT NULL,
   key_id       TEXT,
   created_at   INTEGER NOT NULL,
-  destroyed_at INTEGER
+  destroyed_at INTEGER,
+  ephemeral    INTEGER NOT NULL DEFAULT 0,
+  ttl_seconds  INTEGER NOT NULL DEFAULT 0,
+  last_used_at INTEGER NOT NULL DEFAULT 0,
+  namespace    TEXT NOT NULL DEFAULT 'default'
 );
 
 CREATE TABLE IF NOT EXISTS microvms (
@@ -77,23 +82,65 @@ CREATE TABLE IF NOT EXISTS microvms (
   handle       TEXT,
   state        TEXT NOT NULL,
   created_at   INTEGER NOT NULL,
-  destroyed_at INTEGER
+  destroyed_at INTEGER,
+  namespace    TEXT NOT NULL DEFAULT 'default'
 );
 `
 
 // Store is an encrypted credential vault backed by SQLite. All secret
 // values are AES-256-GCM encrypted with a master key derived from the
 // passphrase via Argon2id; only ciphertext touches disk.
+//
+// AgentNamespace scopes VM and microVM rows for multi-agent use on one host
+// (ORBIT_AGENT_NAMESPACE). Credential namespaces remain caller-supplied;
+// empty credential namespace defaults to the agent namespace. Warm bases use
+// SharedNamespace so every agent can clone them.
 type Store struct {
-	db  *sql.DB
-	key []byte
+	db      *sql.DB
+	key     []byte
+	agentNS string
+}
+
+// SharedNamespace holds warm base VM records visible to every agent.
+const SharedNamespace = "__orbit__"
+
+// DefaultAgentNamespace is used when ORBIT_AGENT_NAMESPACE is unset.
+const DefaultAgentNamespace = "default"
+
+// Option customizes Open.
+type Option func(*openConfig)
+
+type openConfig struct {
+	agentNS string
+}
+
+// WithAgentNamespace sets the process agent namespace for VM/microVM scoping.
+func WithAgentNamespace(ns string) Option {
+	return func(c *openConfig) {
+		if ns != "" {
+			c.agentNS = ns
+		}
+	}
+}
+
+// AgentNamespace returns the store's agent namespace.
+func (s *Store) AgentNamespace() string {
+	if s == nil || s.agentNS == "" {
+		return DefaultAgentNamespace
+	}
+	return s.agentNS
 }
 
 // Open opens (or initializes) the vault at path. On first open it generates
 // an Argon2id salt and stores an encrypted canary; on subsequent opens it
 // derives the key from the passphrase and verifies it against the canary,
 // returning ErrWrongPassphrase on mismatch.
-func Open(path string, passphrase []byte) (*Store, error) {
+func Open(path string, passphrase []byte, opts ...Option) (*Store, error) {
+	cfg := openConfig{agentNS: DefaultAgentNamespace}
+	for _, o := range opts {
+		o(&cfg)
+	}
+
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return nil, fmt.Errorf("vault: creating directory: %w", err)
 	}
@@ -114,13 +161,35 @@ func Open(path string, passphrase []byte) (*Store, error) {
 		db.Close()
 		return nil, fmt.Errorf("vault: applying schema: %w", err)
 	}
+	if err := migrateVMColumns(db); err != nil {
+		db.Close()
+		return nil, err
+	}
 
 	key, err := unlock(db, passphrase)
 	if err != nil {
 		db.Close()
 		return nil, err
 	}
-	return &Store{db: db, key: key}, nil
+	return &Store{db: db, key: key, agentNS: cfg.agentNS}, nil
+}
+
+// migrateVMColumns adds ephemeral TTL columns to older vaults.
+func migrateVMColumns(db *sql.DB) error {
+	for _, stmt := range []string{
+		`ALTER TABLE vms ADD COLUMN ephemeral INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE vms ADD COLUMN ttl_seconds INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE vms ADD COLUMN last_used_at INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE vms ADD COLUMN namespace TEXT NOT NULL DEFAULT 'default'`,
+		`ALTER TABLE microvms ADD COLUMN namespace TEXT NOT NULL DEFAULT 'default'`,
+	} {
+		if _, err := db.Exec(stmt); err != nil {
+			if !strings.Contains(strings.ToLower(err.Error()), "duplicate column") {
+				return fmt.Errorf("vault: migrating vms: %w", err)
+			}
+		}
+	}
+	return nil
 }
 
 // unlock derives the master key, initializing salt and canary on first run.
@@ -197,7 +266,7 @@ func (s *Store) Close() error {
 // its ID and created_at and sets rotated_at.
 func (s *Store) SetCredential(namespace, key string, value []byte, opts ...SetOption) (string, error) {
 	if namespace == "" {
-		namespace = "default"
+		namespace = s.AgentNamespace()
 	}
 	var o setOptions
 	for _, opt := range opts {
@@ -242,7 +311,7 @@ func (s *Store) SetCredential(namespace, key string, value []byte, opts ...SetOp
 // GetCredential decrypts and returns the value stored under (namespace, key).
 func (s *Store) GetCredential(namespace, key string) ([]byte, error) {
 	if namespace == "" {
-		namespace = "default"
+		namespace = s.AgentNamespace()
 	}
 	var ct, iv, tag []byte
 	err := s.db.QueryRow(
@@ -297,7 +366,7 @@ func (s *Store) DeleteCredentialByID(id string) error {
 // DeleteCredential removes the credential under (namespace, key).
 func (s *Store) DeleteCredential(namespace, key string) error {
 	if namespace == "" {
-		namespace = "default"
+		namespace = s.AgentNamespace()
 	}
 	res, err := s.db.Exec(
 		`DELETE FROM credentials WHERE namespace = ? AND key = ?`, namespace, key,
@@ -315,7 +384,7 @@ func (s *Store) DeleteCredential(namespace, key string) error {
 // namespace, ordered by key.
 func (s *Store) ListCredentials(namespace string) ([]CredentialInfo, error) {
 	if namespace == "" {
-		namespace = "default"
+		namespace = s.AgentNamespace()
 	}
 	rows, err := s.db.Query(
 		`SELECT id, namespace, key, COALESCE(label, ''), COALESCE(vm_id, ''),
@@ -338,41 +407,86 @@ func (s *Store) ListCredentials(namespace string) ([]CredentialInfo, error) {
 	return infos, rows.Err()
 }
 
-// CreateVM inserts a VM record in the "creating" state.
+// CreateVM inserts a VM record in the "creating" state. A destroyed row with
+// the same id is reset and reused, because workspace_close keeps the row and
+// id is the primary key. A live row is left in place and reported as a conflict.
 func (s *Store) CreateVM(id, distro string) error {
+	now := time.Now().Unix()
+	ns := s.AgentNamespace()
+	if strings.HasPrefix(id, "orbit-base-") {
+		ns = SharedNamespace
+	}
 	_, err := s.db.Exec(
-		`INSERT INTO vms (id, distro, state, created_at) VALUES (?, ?, ?, ?)`,
-		id, distro, string(VMCreating), time.Now().Unix(),
+		`INSERT INTO vms (id, distro, state, created_at, last_used_at, namespace) VALUES (?, ?, ?, ?, ?, ?)`,
+		id, distro, string(VMCreating), now, now, ns,
+	)
+	if err == nil {
+		return nil
+	}
+	if isConstraint(err) {
+		return s.reuseDestroyedVM(id, distro, ns, now)
+	}
+	return fmt.Errorf("vault: creating vm record: %w", err)
+}
+
+// reuseDestroyedVM turns a tombstone back into a creating record. The previous
+// key, idle TTL, and destroyed_at do not carry over.
+func (s *Store) reuseDestroyedVM(id, distro, ns string, now int64) error {
+	res, err := s.db.Exec(
+		`UPDATE vms
+		 SET distro = ?, state = ?, key_id = NULL, created_at = ?, destroyed_at = NULL,
+		     ephemeral = 0, ttl_seconds = 0, last_used_at = ?, namespace = ?
+		 WHERE id = ? AND state = ?`,
+		distro, string(VMCreating), now, now, ns, id, string(VMDestroyed),
 	)
 	if err != nil {
 		return fmt.Errorf("vault: creating vm record: %w", err)
 	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return fmt.Errorf("vault: creating vm record: %q already exists", id)
+	}
 	return nil
 }
 
-// GetVM returns the VM record with the given id.
+// GetVM returns the VM record with the given id when it belongs to this
+// agent namespace or is a shared warm base.
 func (s *Store) GetVM(id string) (*VM, error) {
 	var vm VM
 	var state string
+	var ephemeral int
 	err := s.db.QueryRow(
-		`SELECT id, distro, state, COALESCE(key_id, ''), created_at, COALESCE(destroyed_at, 0)
+		`SELECT id, distro, state, COALESCE(key_id, ''), created_at, COALESCE(destroyed_at, 0),
+		        ephemeral, ttl_seconds, last_used_at, namespace
 		 FROM vms WHERE id = ?`, id,
-	).Scan(&vm.ID, &vm.Distro, &state, &vm.KeyID, &vm.CreatedAt, &vm.DestroyedAt)
+	).Scan(&vm.ID, &vm.Distro, &state, &vm.KeyID, &vm.CreatedAt, &vm.DestroyedAt,
+		&ephemeral, &vm.TTLSeconds, &vm.LastUsedAt, &vm.Namespace)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
 	if err != nil {
 		return nil, fmt.Errorf("vault: reading vm record: %w", err)
 	}
+	if !s.vmVisible(vm.Namespace) {
+		return nil, ErrNotFound
+	}
 	vm.State = VMState(state)
+	vm.Ephemeral = ephemeral != 0
 	return &vm, nil
 }
 
-// ListVMs returns all VM records, newest first.
+func (s *Store) vmVisible(ns string) bool {
+	return ns == s.AgentNamespace() || ns == SharedNamespace
+}
+
+// ListVMs returns VM records for this agent namespace plus shared warm bases.
 func (s *Store) ListVMs() ([]VM, error) {
 	rows, err := s.db.Query(
-		`SELECT id, distro, state, COALESCE(key_id, ''), created_at, COALESCE(destroyed_at, 0)
-		 FROM vms ORDER BY created_at DESC, id`,
+		`SELECT id, distro, state, COALESCE(key_id, ''), created_at, COALESCE(destroyed_at, 0),
+		        ephemeral, ttl_seconds, last_used_at, namespace
+		 FROM vms
+		 WHERE namespace = ? OR namespace = ?
+		 ORDER BY created_at DESC, id`,
+		s.AgentNamespace(), SharedNamespace,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("vault: listing vms: %w", err)
@@ -383,13 +497,51 @@ func (s *Store) ListVMs() ([]VM, error) {
 	for rows.Next() {
 		var vm VM
 		var state string
-		if err := rows.Scan(&vm.ID, &vm.Distro, &state, &vm.KeyID, &vm.CreatedAt, &vm.DestroyedAt); err != nil {
+		var ephemeral int
+		if err := rows.Scan(&vm.ID, &vm.Distro, &state, &vm.KeyID, &vm.CreatedAt, &vm.DestroyedAt,
+			&ephemeral, &vm.TTLSeconds, &vm.LastUsedAt, &vm.Namespace); err != nil {
 			return nil, fmt.Errorf("vault: listing vms: %w", err)
 		}
 		vm.State = VMState(state)
+		vm.Ephemeral = ephemeral != 0
 		vms = append(vms, vm)
 	}
 	return vms, rows.Err()
+}
+
+// SetVMEphemeral marks a VM for idle auto-destroy with the given TTL.
+func (s *Store) SetVMEphemeral(id string, ttlSeconds int64) error {
+	if ttlSeconds <= 0 {
+		return fmt.Errorf("vault: ttl_seconds must be positive")
+	}
+	res, err := s.db.Exec(
+		`UPDATE vms SET ephemeral = 1, ttl_seconds = ?
+		 WHERE id = ? AND (namespace = ? OR namespace = ?)`,
+		ttlSeconds, id, s.AgentNamespace(), SharedNamespace,
+	)
+	if err != nil {
+		return fmt.Errorf("vault: setting vm ephemeral: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// TouchVMLastUsed updates last_used_at for idle-TTL tracking.
+func (s *Store) TouchVMLastUsed(id string) error {
+	res, err := s.db.Exec(
+		`UPDATE vms SET last_used_at = ? WHERE id = ? AND state != ?
+		 AND (namespace = ? OR namespace = ?)`,
+		time.Now().Unix(), id, string(VMDestroyed), s.AgentNamespace(), SharedNamespace,
+	)
+	if err != nil {
+		return fmt.Errorf("vault: touching vm: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrNotFound
+	}
+	return nil
 }
 
 // SetVMState updates a VM's lifecycle state. Transitioning to VMDestroyed
@@ -399,11 +551,15 @@ func (s *Store) SetVMState(id string, state VMState) error {
 	var err error
 	if state == VMDestroyed {
 		res, err = s.db.Exec(
-			`UPDATE vms SET state = ?, destroyed_at = ? WHERE id = ?`,
-			string(state), time.Now().Unix(), id,
+			`UPDATE vms SET state = ?, destroyed_at = ?
+			 WHERE id = ? AND (namespace = ? OR namespace = ?)`,
+			string(state), time.Now().Unix(), id, s.AgentNamespace(), SharedNamespace,
 		)
 	} else {
-		res, err = s.db.Exec(`UPDATE vms SET state = ? WHERE id = ?`, string(state), id)
+		res, err = s.db.Exec(
+			`UPDATE vms SET state = ? WHERE id = ? AND (namespace = ? OR namespace = ?)`,
+			string(state), id, s.AgentNamespace(), SharedNamespace,
+		)
 	}
 	if err != nil {
 		return fmt.Errorf("vault: updating vm state: %w", err)
@@ -416,7 +572,10 @@ func (s *Store) SetVMState(id string, state VMState) error {
 
 // SetVMKey associates a credential (SSH keypair) with a VM.
 func (s *Store) SetVMKey(id, keyID string) error {
-	res, err := s.db.Exec(`UPDATE vms SET key_id = ? WHERE id = ?`, keyID, id)
+	res, err := s.db.Exec(
+		`UPDATE vms SET key_id = ? WHERE id = ? AND (namespace = ? OR namespace = ?)`,
+		keyID, id, s.AgentNamespace(), SharedNamespace,
+	)
 	if err != nil {
 		return fmt.Errorf("vault: updating vm key: %w", err)
 	}
@@ -428,44 +587,81 @@ func (s *Store) SetVMKey(id, keyID string) error {
 
 // CreateMicroVM inserts a nested-guest record in the "creating" state.
 func (s *Store) CreateMicroVM(mv MicroVM) error {
+	ns := mv.Namespace
+	if ns == "" {
+		ns = s.AgentNamespace()
+	}
+	now := time.Now().Unix()
 	_, err := s.db.Exec(
-		`INSERT INTO microvms (id, carrier, image, key_id, ssh_port, handle, state, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO microvms (id, carrier, image, key_id, ssh_port, handle, state, created_at, namespace)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		mv.ID, mv.Carrier, mv.Image, nullable(mv.KeyID), mv.SSHPort,
-		nullable(mv.Handle), string(VMCreating), time.Now().Unix(),
+		nullable(mv.Handle), string(VMCreating), now, ns,
 	)
-	if err != nil {
+	if err == nil {
+		return nil
+	}
+	if !isConstraint(err) {
 		return fmt.Errorf("vault: creating microvm record: %w", err)
+	}
+	res, uerr := s.db.Exec(
+		`UPDATE microvms
+		 SET carrier = ?, image = ?, key_id = ?, ssh_port = ?, handle = ?,
+		     state = ?, created_at = ?, destroyed_at = NULL, namespace = ?
+		 WHERE id = ? AND state = ?`,
+		mv.Carrier, mv.Image, nullable(mv.KeyID), mv.SSHPort, nullable(mv.Handle),
+		string(VMCreating), now, ns, mv.ID, string(VMDestroyed),
+	)
+	if uerr != nil {
+		return fmt.Errorf("vault: creating microvm record: %w", uerr)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return fmt.Errorf("vault: creating microvm record: %q already exists", mv.ID)
 	}
 	return nil
 }
 
-// GetMicroVM returns the microVM record with the given id.
+// isConstraint reports a SQLite constraint failure (primary key or unique).
+// Extended codes keep the primary code in the low byte.
+func isConstraint(err error) bool {
+	var se *sqlite.Error
+	if !errors.As(err, &se) {
+		return false
+	}
+	const sqliteConstraint = 19 // SQLITE_CONSTRAINT
+	return se.Code()&0xff == sqliteConstraint
+}
+
+// GetMicroVM returns the microVM record with the given id for this agent.
 func (s *Store) GetMicroVM(id string) (*MicroVM, error) {
 	var mv MicroVM
 	var state string
 	err := s.db.QueryRow(
 		`SELECT id, carrier, image, COALESCE(key_id, ''), ssh_port, COALESCE(handle, ''),
-		        state, created_at, COALESCE(destroyed_at, 0)
+		        state, created_at, COALESCE(destroyed_at, 0), namespace
 		 FROM microvms WHERE id = ?`, id,
 	).Scan(&mv.ID, &mv.Carrier, &mv.Image, &mv.KeyID, &mv.SSHPort, &mv.Handle,
-		&state, &mv.CreatedAt, &mv.DestroyedAt)
+		&state, &mv.CreatedAt, &mv.DestroyedAt, &mv.Namespace)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
 	if err != nil {
 		return nil, fmt.Errorf("vault: reading microvm record: %w", err)
 	}
+	if mv.Namespace != s.AgentNamespace() {
+		return nil, ErrNotFound
+	}
 	mv.State = VMState(state)
 	return &mv, nil
 }
 
-// ListMicroVMs returns all microVM records, newest first.
+// ListMicroVMs returns microVM records for this agent namespace.
 func (s *Store) ListMicroVMs() ([]MicroVM, error) {
 	rows, err := s.db.Query(
 		`SELECT id, carrier, image, COALESCE(key_id, ''), ssh_port, COALESCE(handle, ''),
-		        state, created_at, COALESCE(destroyed_at, 0)
-		 FROM microvms ORDER BY created_at DESC, id`,
+		        state, created_at, COALESCE(destroyed_at, 0), namespace
+		 FROM microvms WHERE namespace = ? ORDER BY created_at DESC, id`,
+		s.AgentNamespace(),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("vault: listing microvms: %w", err)
@@ -477,7 +673,7 @@ func (s *Store) ListMicroVMs() ([]MicroVM, error) {
 		var mv MicroVM
 		var state string
 		if err := rows.Scan(&mv.ID, &mv.Carrier, &mv.Image, &mv.KeyID, &mv.SSHPort,
-			&mv.Handle, &state, &mv.CreatedAt, &mv.DestroyedAt); err != nil {
+			&mv.Handle, &state, &mv.CreatedAt, &mv.DestroyedAt, &mv.Namespace); err != nil {
 			return nil, fmt.Errorf("vault: listing microvms: %w", err)
 		}
 		mv.State = VMState(state)
@@ -493,11 +689,14 @@ func (s *Store) SetMicroVMState(id string, state VMState) error {
 	var err error
 	if state == VMDestroyed {
 		res, err = s.db.Exec(
-			`UPDATE microvms SET state = ?, destroyed_at = ? WHERE id = ?`,
-			string(state), time.Now().Unix(), id,
+			`UPDATE microvms SET state = ?, destroyed_at = ? WHERE id = ? AND namespace = ?`,
+			string(state), time.Now().Unix(), id, s.AgentNamespace(),
 		)
 	} else {
-		res, err = s.db.Exec(`UPDATE microvms SET state = ? WHERE id = ?`, string(state), id)
+		res, err = s.db.Exec(
+			`UPDATE microvms SET state = ? WHERE id = ? AND namespace = ?`,
+			string(state), id, s.AgentNamespace(),
+		)
 	}
 	if err != nil {
 		return fmt.Errorf("vault: updating microvm state: %w", err)

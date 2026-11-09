@@ -42,6 +42,11 @@ func (f *fakeOrb) run(ctx context.Context, args ...string) ([]byte, []byte, erro
 			return nil, []byte("boom"), errors.New("orbctl create failed")
 		}
 		return nil, nil, nil
+	case "clone":
+		if f.failCreate {
+			return nil, []byte("boom"), errors.New("orbctl clone failed")
+		}
+		return nil, nil, nil
 	case "info":
 		state := "running"
 		if len(f.infoStates) > 0 {
@@ -236,6 +241,13 @@ func TestStartStopDestroyLifecycle(t *testing.T) {
 	}
 	if call := f.lastCall("delete"); !slices.Contains(call, "-f") {
 		t.Errorf("delete not forced: %v", call)
+	}
+
+	if _, err := m.Create(ctx, CreateSpec{Distro: "alpine", Name: "lc"}); err != nil {
+		t.Fatalf("recreate after destroy: %v", err)
+	}
+	if rec, _ := s.GetVM("lc"); rec.State != vault.VMRunning || rec.Distro != "alpine" {
+		t.Errorf("after recreate: %+v", rec)
 	}
 
 	if err := m.Start(ctx, "ghost"); !errors.Is(err, vault.ErrNotFound) {

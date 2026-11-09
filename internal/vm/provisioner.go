@@ -33,9 +33,8 @@ func orbExec(ctx context.Context, vmName, runUser, script string, args ...string
 	return stdout.Bytes(), stderr.Bytes(), err
 }
 
-// Provisioner implements the vm_create flow: generate a keypair, create the
-// machine, then install and configure sshd inside it so the agent's key
-// works (spec §4, adapted — see distro.go for why cloud-init is not used).
+// Provisioner implements the vm_create flow: ensure a warm base image for
+// the distro, clone it, then inject a fresh agent keypair (spec §4 adapted).
 type Provisioner struct {
 	keys             *keys.Manager
 	vms              *Manager
@@ -90,16 +89,38 @@ func (p *Provisioner) User() string { return p.user }
 // KeyLabel returns the vault label of the keypair for a VM name.
 func KeyLabel(vmName string) string { return "vm-" + vmName }
 
-// Create provisions a new machine with its own freshly generated keypair:
-// orbctl creates the VM and the agent user, then a root script installs and
-// enables sshd and the agent's authorized_keys. On any failure the VM and
-// its key are cleaned up so neither OrbStack machines nor vault keys leak.
-func (p *Provisioner) Create(ctx context.Context, distro, name string, isolated bool) (*vault.VM, error) {
+// CreateOptions customizes Provisioner.Create beyond distro/name/isolation.
+type CreateOptions struct {
+	// Ephemeral marks the VM for idle auto-destroy by the reaper.
+	Ephemeral bool
+	// TTL is the idle lifetime when Ephemeral is true. Zero means DefaultEphemeralTTL.
+	TTL time.Duration
+}
+
+// DefaultEphemeralTTL is used when vm_create sets ephemeral without an explicit ttl.
+const DefaultEphemeralTTL = 30 * time.Minute
+
+// Create provisions a new machine with its own freshly generated keypair.
+// Cold path: create+provision a per-distro warm base once. Warm path: clone
+// the base and inject only authorized_keys for the new key.
+func (p *Provisioner) Create(ctx context.Context, distro, name string, isolated bool, opts ...CreateOptions) (*vault.VM, error) {
+	var opt CreateOptions
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
 	if name == "" {
 		name = "agent-" + randHex(4)
 	}
-	label := KeyLabel(name)
+	if IsBaseName(name) {
+		return nil, fmt.Errorf("vm: name %q is reserved for warm base images", name)
+	}
 
+	base := BaseName(distro)
+	if err := p.ensureBase(ctx, distro, base, isolated); err != nil {
+		return nil, err
+	}
+
+	label := KeyLabel(name)
 	keyID, kp, err := p.keys.Generate(label, name)
 	if err != nil {
 		return nil, err
@@ -110,22 +131,13 @@ func (p *Provisioner) Create(ctx context.Context, distro, name string, isolated 
 		return nil, err
 	}
 
-	rec, err := p.vms.Create(ctx, CreateSpec{
-		Distro:           distro,
-		Name:             name,
-		Username:         p.user,
-		DisableIsolation: !isolated,
-	})
+	rec, err := p.vms.Clone(ctx, base, name, distro)
 	if err != nil {
 		p.keys.Revoke(label)
 		return nil, err
 	}
 
-	if err := p.provision(ctx, name, pub); err != nil {
-		// The machine is up but unreachable with our key; tear it down so it
-		// doesn't linger, and revoke the now-useless key. provision failing
-		// often means ctx is already cancelled/timed-out, which would make
-		// Destroy fail too — so clean up with a fresh, bounded context.
+	if err := p.injectKey(ctx, name, pub); err != nil {
 		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 		defer cancel()
 		if derr := p.vms.Destroy(cleanupCtx, name, false); derr != nil {
@@ -138,18 +150,78 @@ func (p *Provisioner) Create(ctx context.Context, distro, name string, isolated 
 	if err := p.vms.SetKey(name, keyID); err != nil {
 		return nil, err
 	}
+	if opt.Ephemeral {
+		ttl := opt.TTL
+		if ttl <= 0 {
+			ttl = DefaultEphemeralTTL
+		}
+		if err := p.vms.store.SetVMEphemeral(name, int64(ttl.Seconds())); err != nil {
+			return nil, err
+		}
+		rec.Ephemeral = true
+		rec.TTLSeconds = int64(ttl.Seconds())
+	}
 	rec.KeyID = keyID
 	return rec, nil
 }
 
-// provision runs the sshd provisioning script as root inside the VM,
-// retrying to absorb the brief window where the VM is "running" but its
-// network or package mirrors are not yet ready.
+// ensureBase creates and fully provisions orbit-base-<distro> once.
+func (p *Provisioner) ensureBase(ctx context.Context, distro, base string, isolated bool) error {
+	if rec, err := p.vms.store.GetVM(base); err == nil && rec.State != vault.VMDestroyed {
+		if rec.State == vault.VMStopped {
+			return p.vms.Start(ctx, base)
+		}
+		return nil
+	}
+
+	label := KeyLabel(base)
+	keyID, kp, err := p.keys.Generate(label, base)
+	if err != nil {
+		return err
+	}
+	pub, err := kp.AuthorizedKey()
+	if err != nil {
+		p.keys.Revoke(label)
+		return err
+	}
+
+	if _, err := p.vms.Create(ctx, CreateSpec{
+		Distro:           distro,
+		Name:             base,
+		Username:         p.user,
+		DisableIsolation: !isolated,
+	}); err != nil {
+		p.keys.Revoke(label)
+		return fmt.Errorf("vm: ensuring base %s: %w", base, err)
+	}
+
+	if err := p.provision(ctx, base, pub); err != nil {
+		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+		defer cancel()
+		// Bases are protected from Destroy — delete via orbctl directly for cleanup.
+		_, _, _ = p.vms.run(cleanupCtx, "delete", "-f", base)
+		_ = p.vms.store.SetVMState(base, vault.VMDestroyed)
+		p.keys.Revoke(label)
+		return err
+	}
+
+	return p.vms.SetKey(base, keyID)
+}
+
+// injectKey installs authorized_keys on a clone (sshd already present).
+func (p *Provisioner) injectKey(ctx context.Context, vmName, pubKey string) error {
+	return p.runScript(ctx, vmName, keyInjectScript(), pubKey)
+}
+
+// provision runs the full sshd provisioning script as root inside the VM.
 func (p *Provisioner) provision(ctx context.Context, vmName, pubKey string) error {
+	return p.runScript(ctx, vmName, provisionScript(), pubKey)
+}
+
+func (p *Provisioner) runScript(ctx context.Context, vmName, script, pubKey string) error {
 	ctx, cancel := context.WithTimeout(ctx, p.provisionTimeout)
 	defer cancel()
 
-	script := provisionScript()
 	var lastErr error
 	for attempt := 0; attempt < p.provisionRetries; attempt++ {
 		stdout, stderr, err := p.exec(ctx, vmName, "root", script, p.user, pubKey)
