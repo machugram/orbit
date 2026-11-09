@@ -85,8 +85,8 @@ func (m *Manager) Create(ctx context.Context, spec CreateSpec) (*vault.VM, error
 		username = "agent"
 	}
 
-	// Record first: the PK constraint rejects duplicate names before any
-	// orbctl side effects.
+	// Record first: a live name is rejected before any orbctl side effects.
+	// A destroyed row is reset inside CreateVM so the name can be used again.
 	if err := m.store.CreateVM(name, spec.Distro); err != nil {
 		return nil, err
 	}

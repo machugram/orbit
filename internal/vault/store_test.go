@@ -229,6 +229,9 @@ func TestVMLifecycle(t *testing.T) {
 	if vm.State != VMRunning || vm.KeyID != keyID {
 		t.Errorf("after update: %+v", vm)
 	}
+	if err := s.SetVMEphemeral("sandbox-xyz", 60); err != nil {
+		t.Fatal(err)
+	}
 
 	if err := s.SetVMState("sandbox-xyz", VMDestroyed); err != nil {
 		t.Fatal(err)
@@ -244,6 +247,20 @@ func TestVMLifecycle(t *testing.T) {
 	}
 	if len(vms) != 1 {
 		t.Fatalf("got %d vms, want 1", len(vms))
+	}
+
+	if err := s.CreateVM("sandbox-xyz", "alpine"); err != nil {
+		t.Fatalf("recreate after destroy: %v", err)
+	}
+	vm, err = s.GetVM("sandbox-xyz")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if vm.State != VMCreating || vm.Distro != "alpine" || vm.KeyID != "" || vm.DestroyedAt != 0 || vm.Ephemeral || vm.TTLSeconds != 0 {
+		t.Errorf("recreated vm kept tombstone fields: %+v", vm)
+	}
+	if err := s.CreateVM("sandbox-xyz", "alpine"); err == nil {
+		t.Fatal("live duplicate name accepted")
 	}
 
 	if _, err := s.GetVM("nope"); !errors.Is(err, ErrNotFound) {

@@ -1,6 +1,6 @@
-// Command orbit is the Orbit MCP server (ORBIT_SPEC.md): it
-// lets an MCP client manage SSH keys in an encrypted vault, provision
-// isolated OrbStack VMs with those keys, and execute work inside them.
+// Command orbit is the Orbit MCP server. An agent runs work, opens and
+// closes workspaces, starts services, and stores secrets. Inventory and
+// diagnostics are MCP resources. SSH keys stay in the encrypted vault.
 //
 // Configuration (environment):
 //
@@ -36,15 +36,11 @@ import (
 const version = "0.1.0"
 
 func main() {
-	flag.Bool("version", false, "print version and exit")
+	showVersion := flag.Bool("version", false, "print version and exit")
 	flag.Parse()
-
-	// Handle --version flag
-	for _, arg := range os.Args[1:] {
-		if arg == "--version" {
-			fmt.Println("orbit " + version)
-			os.Exit(0)
-		}
+	if *showVersion {
+		fmt.Println("orbit " + version)
+		os.Exit(0)
 	}
 
 	if err := run(); err != nil {
@@ -81,10 +77,13 @@ func run() error {
 	vmm := vm.NewManager(store)
 	// One Runner drives both plain VMs and nested microVMs: the microvm
 	// resolver handles microVM ids and chains to the vault resolver for the
-	// rest, so exec/exec_script/file_* work against either by name.
+	// rest, so run and file_put/file_get work against either by name.
 	resolver := microvm.NewResolver(store, km, exec.VaultResolver(store, km))
 	runner := exec.NewRunnerWithResolver(resolver, exec.WithActivityTracker(exec.VaultActivity{Store: store}))
 	deps := &tools.Deps{
+		Version:    version,
+		VaultPath:  vaultPath,
+		AuditPath:  auditPath,
 		Vault:      store,
 		Keys:       km,
 		VMs:        vmm,

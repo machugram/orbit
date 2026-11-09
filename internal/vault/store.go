@@ -12,7 +12,7 @@ import (
 	"strings"
 	"time"
 
-	_ "modernc.org/sqlite"
+	"modernc.org/sqlite"
 )
 
 // newID returns a random 128-bit hex identifier. This matches the crypto/rand
@@ -407,7 +407,9 @@ func (s *Store) ListCredentials(namespace string) ([]CredentialInfo, error) {
 	return infos, rows.Err()
 }
 
-// CreateVM inserts a VM record in the "creating" state.
+// CreateVM inserts a VM record in the "creating" state. A destroyed row with
+// the same id is reset and reused, because workspace_close keeps the row and
+// id is the primary key. A live row is left in place and reported as a conflict.
 func (s *Store) CreateVM(id, distro string) error {
 	now := time.Now().Unix()
 	ns := s.AgentNamespace()
@@ -418,8 +420,30 @@ func (s *Store) CreateVM(id, distro string) error {
 		`INSERT INTO vms (id, distro, state, created_at, last_used_at, namespace) VALUES (?, ?, ?, ?, ?, ?)`,
 		id, distro, string(VMCreating), now, now, ns,
 	)
+	if err == nil {
+		return nil
+	}
+	if isConstraint(err) {
+		return s.reuseDestroyedVM(id, distro, ns, now)
+	}
+	return fmt.Errorf("vault: creating vm record: %w", err)
+}
+
+// reuseDestroyedVM turns a tombstone back into a creating record. The previous
+// key, idle TTL, and destroyed_at do not carry over.
+func (s *Store) reuseDestroyedVM(id, distro, ns string, now int64) error {
+	res, err := s.db.Exec(
+		`UPDATE vms
+		 SET distro = ?, state = ?, key_id = NULL, created_at = ?, destroyed_at = NULL,
+		     ephemeral = 0, ttl_seconds = 0, last_used_at = ?, namespace = ?
+		 WHERE id = ? AND state = ?`,
+		distro, string(VMCreating), now, now, ns, id, string(VMDestroyed),
+	)
 	if err != nil {
 		return fmt.Errorf("vault: creating vm record: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return fmt.Errorf("vault: creating vm record: %q already exists", id)
 	}
 	return nil
 }
@@ -567,16 +591,45 @@ func (s *Store) CreateMicroVM(mv MicroVM) error {
 	if ns == "" {
 		ns = s.AgentNamespace()
 	}
+	now := time.Now().Unix()
 	_, err := s.db.Exec(
 		`INSERT INTO microvms (id, carrier, image, key_id, ssh_port, handle, state, created_at, namespace)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		mv.ID, mv.Carrier, mv.Image, nullable(mv.KeyID), mv.SSHPort,
-		nullable(mv.Handle), string(VMCreating), time.Now().Unix(), ns,
+		nullable(mv.Handle), string(VMCreating), now, ns,
 	)
-	if err != nil {
+	if err == nil {
+		return nil
+	}
+	if !isConstraint(err) {
 		return fmt.Errorf("vault: creating microvm record: %w", err)
 	}
+	res, uerr := s.db.Exec(
+		`UPDATE microvms
+		 SET carrier = ?, image = ?, key_id = ?, ssh_port = ?, handle = ?,
+		     state = ?, created_at = ?, destroyed_at = NULL, namespace = ?
+		 WHERE id = ? AND state = ?`,
+		mv.Carrier, mv.Image, nullable(mv.KeyID), mv.SSHPort, nullable(mv.Handle),
+		string(VMCreating), now, ns, mv.ID, string(VMDestroyed),
+	)
+	if uerr != nil {
+		return fmt.Errorf("vault: creating microvm record: %w", uerr)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return fmt.Errorf("vault: creating microvm record: %q already exists", mv.ID)
+	}
 	return nil
+}
+
+// isConstraint reports a SQLite constraint failure (primary key or unique).
+// Extended codes keep the primary code in the low byte.
+func isConstraint(err error) bool {
+	var se *sqlite.Error
+	if !errors.As(err, &se) {
+		return false
+	}
+	const sqliteConstraint = 19 // SQLITE_CONSTRAINT
+	return se.Code()&0xff == sqliteConstraint
 }
 
 // GetMicroVM returns the microVM record with the given id for this agent.

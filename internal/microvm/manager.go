@@ -272,6 +272,9 @@ func debianFamily(distro string) bool {
 
 func keyLabel(name string) string { return "uvm-" + name }
 
+// KeyLabel is the vault label of the SSH keypair for a guest name.
+func KeyLabel(name string) string { return keyLabel(name) }
+
 func randHex(n int) string {
 	b := make([]byte, n)
 	rand.Read(b)

@@ -9,6 +9,7 @@ import (
 	"net"
 	"os"
 	"path"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -196,6 +197,16 @@ func (vr *vaultResolver) Resolve(ctx context.Context, vmID string) (ConnInfo, er
 // A non-zero exit code is reported in the Result, not as an error. Cancel
 // or time out via ctx.
 func (r *Runner) Exec(ctx context.Context, vmID, command string) (*Result, error) {
+	return r.ExecWithEnv(ctx, vmID, command, nil)
+}
+
+// ExecWithEnv runs a shell command with environment variables injected over
+// SSH stdin. This keeps secret values out of the MCP transcript and out of the
+// remote command argv.
+func (r *Runner) ExecWithEnv(ctx context.Context, vmID, command string, env map[string]string) (*Result, error) {
+	if len(env) > 0 {
+		return r.exec(ctx, vmID, "sh -s", envWrapper(command, env))
+	}
 	return r.exec(ctx, vmID, command, nil)
 }
 
@@ -253,18 +264,30 @@ func (r *Runner) touch(vmID string) {
 	_ = r.activity.Touch(vmID)
 }
 
-// allowedInterpreters bounds the exec_script interpreter to a fixed set, so a
-// caller-supplied value cannot smuggle extra arguments or commands into the
-// shell line that runs the uploaded script.
+// allowedInterpreters bounds a caller-supplied interpreter to a fixed set, so
+// it cannot smuggle extra arguments or commands into the shell line that runs
+// a script.
 var allowedInterpreters = map[string]bool{
 	"bash": true, "sh": true, "zsh": true, "dash": true, "ash": true,
 	"python3": true, "python": true, "perl": true, "ruby": true, "node": true,
+}
+
+// SupportedInterpreter reports whether name may be used to run a script.
+// An empty name means "use the caller's default".
+func SupportedInterpreter(name string) bool {
+	return name == "" || allowedInterpreters[name]
 }
 
 // ExecScript uploads a script to the VM, runs it with the interpreter
 // (default "bash"), and removes it afterwards — all over one pooled SSH
 // connection (the exec_script MCP tool).
 func (r *Runner) ExecScript(ctx context.Context, vmID, script, interpreter string) (*Result, error) {
+	return r.ExecScriptWithEnv(ctx, vmID, script, interpreter, nil)
+}
+
+// ExecScriptWithEnv uploads a script, then runs it with environment variables
+// injected over SSH stdin rather than embedded in the command line.
+func (r *Runner) ExecScriptWithEnv(ctx context.Context, vmID, script, interpreter string, env map[string]string) (*Result, error) {
 	if interpreter == "" {
 		interpreter = "bash"
 	}
@@ -289,7 +312,13 @@ func (r *Runner) ExecScript(ctx context.Context, vmID, script, interpreter strin
 		_, _ = r.runOn(ctx, client, vmID, "rm -f "+shellQuote(remote), nil)
 	}()
 
-	res, err := r.runOn(ctx, client, vmID, interpreter+" "+shellQuote(remote), nil)
+	command := interpreter + " " + shellQuote(remote)
+	stdin := io.Reader(nil)
+	if len(env) > 0 {
+		command = "sh -s"
+		stdin = envWrapper(interpreter+" "+shellQuote(remote), env)
+	}
+	res, err := r.runOn(ctx, client, vmID, command, stdin)
 	if err != nil {
 		ok = false
 		return nil, err
@@ -368,4 +397,28 @@ func (r *Runner) pushOn(client *ssh.Client, vmID string, src io.Reader, remotePa
 // shellQuote single-quotes s for safe interpolation into a shell command.
 func shellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
+func envWrapper(command string, env map[string]string) io.Reader {
+	var b strings.Builder
+	for _, name := range sortedEnvNames(env) {
+		b.WriteString("export ")
+		b.WriteString(name)
+		b.WriteString("=")
+		b.WriteString(shellQuote(env[name]))
+		b.WriteString("\n")
+	}
+	b.WriteString("exec sh -c ")
+	b.WriteString(shellQuote(command))
+	b.WriteString("\n")
+	return strings.NewReader(b.String())
+}
+
+func sortedEnvNames(env map[string]string) []string {
+	names := make([]string, 0, len(env))
+	for name := range env {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
 }

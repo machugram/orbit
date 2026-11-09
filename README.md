@@ -1,8 +1,9 @@
 # Orbit
 
 Autonomous agent infrastructure on OrbStack: an MCP server that lets an agent
-generate its own SSH keys, spin up isolated Linux VMs, execute work inside
-them, and tear them down — with all secrets held in a local encrypted vault.
+generate its own SSH keys, spin up isolated Linux VMs, run containers and
+nested microVMs, reconcile desired state, and tear resources down — with all
+secrets held in a local encrypted vault.
 
 macOS + [OrbStack](https://orbstack.dev) only. Not affiliated with other
 projects named Orbit (for example [schmitech/orbit](https://github.com/schmitech/orbit)).
@@ -30,15 +31,15 @@ sequenceDiagram
     participant OrbStack
     participant VM as VM sshd
 
-    Agent->>Orbit: vm_create(distro, name)
+    Agent->>Orbit: workspace_open(kind=vm, distro, name)
     Orbit->>Vault: generate Ed25519 key (encrypted at rest)
     Orbit->>OrbStack: orbctl create --isolated
     OrbStack-->>Orbit: running
     Orbit->>OrbStack: orb -u root (sshd + authorized_keys)
     Note over Orbit,Vault: private key never written to disk
-    Orbit-->>Agent: vm_id, key_id, ssh_user
+    Orbit-->>Agent: name, public_key, ssh_user
 
-    Agent->>Orbit: exec(vm_id, command)
+    Agent->>Orbit: run(target, command)
     Orbit->>Vault: decrypt signer into memory
     Orbit->>VM: SSH name.orb.local:22
     VM-->>Orbit: stdout / stderr
@@ -58,7 +59,7 @@ internal/exec/       SSH task runner (exec, scripts, SFTP push/pull, parallel)
 internal/container/  Docker + Compose on OrbStack with vault secret injection
 internal/microvm/    nested QEMU/TCG guests (own kernel) for eBPF and kernel-level work
 internal/state/      declarative desired-state reconciliation over VMs, containers, and compose
-internal/tools/      MCP tool definitions (vm_*, key_*, exec*, file_*, cred_*, container_*, compose_*, microvm_*, state_*)
+internal/tools/      MCP jobs (run, workspace_*, service_*, file_*, secret_put, converge) and orbit:// resources
 internal/audit/      JSONL audit log of every tool call
 internal/keychain/   master passphrase via env or macOS Keychain
 ```
@@ -86,6 +87,19 @@ See [INSTALL.md](INSTALL.md) for the full guide. Quick start:
 go build -o bin/orbit ./cmd/orbit
 claude mcp add orbit -- $PWD/bin/orbit
 ```
+
+For Codex / ChatGPT Work, I build the binary somewhere stable and register it
+in `~/.codex/config.toml`:
+
+```toml
+[mcp_servers.orbit]
+command = "/absolute/path/to/orbit"
+startup_timeout_sec = 120
+```
+
+After I restart or reload Codex, I read `orbit://info` to confirm the active
+server version and paths, then `orbit://doctor` to check OrbStack, Docker, and
+vault/audit path readiness.
 
 Or, once the module is published:
 
@@ -123,10 +137,9 @@ Configuration (all optional):
   in-VM `authorized_keys` — using it would collapse all VMs onto one
   credential.
 - Every tool call is appended to the audit log (no secret values logged)
-- `cred_list` / `key_list` return names and metadata, never values
-- `cred_get` **does** return the secret value to the caller, including the
-  model. Prefer `secret_env` on container/compose tools when the value must
-  stay out of the transcript.
+- `orbit://secrets` lists names, never values
+- `secret_put` stores a value and does not return it. `run` and `service_up`
+  take `secret_env` (env-var name → vault name) so the value stays out of the transcript
 
 **Known limitation — SSH host keys are trust-on-connect.** Orbit does not
 verify a VM's SSH host key (`InsecureIgnoreHostKey`). This is a bounded,
@@ -138,7 +151,7 @@ Full reasoning: [ADR-011](docs/adr/ADR-011-ssh-host-key-trust-model.md).
 
 ## Provisioning (multi-distro)
 
-`vm_create` works across every OrbStack distro family with no
+`workspace_open` with `kind=vm` works across every OrbStack distro family with no
 configuration. The spec assumed cloud-init (§4), but OrbStack only ships
 cloud-init in its Debian/Ubuntu images — Alpine, Fedora, Arch, etc. have
 none. Instead, after `orbctl` creates the machine (and the `agent` user
@@ -160,20 +173,16 @@ custom handling.
 
 Alongside full VMs, the agent can drive OrbStack's built-in Docker engine
 for fast, ephemeral work (containers start in 1–3s vs ~30–60s for a
-provisioned VM). The `container_*` / `compose_*` / `image_build` tools wrap
+provisioned VM). `service_up` / `service_down` and `run` drive
 `docker` and `docker compose`:
 
-| Tool | Wraps |
-|------|-------|
-| `container_run` | `docker run` |
-| `container_exec` | `docker exec` |
-| `container_logs` / `container_list` | `docker logs` / `docker ps` |
-| `container_stop` / `container_rm` | container lifecycle |
-| `compose_up` / `compose_down` / `compose_logs` | `docker compose` (file path or inline YAML); `compose_up` supports per-service `scale` |
-| `compose_ps` | service state/health + each service's `<name>.orb.local` endpoint |
-| `compose_exec` | run a command in a service *by service name* (resolves the container for you) |
-| `compose_build` | build a project's images (all or named services) |
-| `image_build` | `docker build` (host context, optional inline Dockerfile) |
+| Call | What Orbit does |
+|------|-----------------|
+| `run` with no target | `docker run --rm` and return stdout, stderr, and the exit code |
+| `service_up` with `image` | start a detached container and return its `name.orb.local` address |
+| `service_up` with `project` | `docker compose up -d` from a file or inline YAML, then return endpoints. `build` builds images first |
+| `service_down` | remove the container, or `docker compose -p <project> down` |
+| `run` with `target` | exec into that workspace |
 
 **Vault secret injection** is the reason to use these over the raw CLI. A
 container's environment can reference a vault secret by name via `secret_env`
@@ -186,7 +195,7 @@ and the vault key name. See [internal/container](internal/container) and
 [ADR-005](docs/adr/ADR-005-container-tools-vault-injection.md).
 
 > Containers share the OrbStack Linux VM kernel, so they are less isolated
-> than `orbctl --isolated` VMs. For untrusted code, prefer `vm_create`; for
+> than `orbctl --isolated` VMs. For untrusted code, use `run` with `isolation=vm` or `workspace_open` `kind=vm`; for
 > builds, tests, and ephemeral service tasks, containers are faster.
 
 ## Nested microVMs (eBPF and kernel-level work)
@@ -196,7 +205,7 @@ kernel. That is wrong for anything that loads code *into* the kernel: an eBPF
 program loaded inside a machine attaches to the kernel shared by every other
 machine and by OrbStack itself, so it is not contained.
 
-`microvm_create` solves this by booting a **nested QEMU guest with its own
+`workspace_open` with `kind=microvm` solves this by booting a **nested QEMU guest with its own
 kernel** inside a carrier VM:
 
 ```
@@ -205,23 +214,21 @@ macOS host → OrbStack shared kernel (carrier, --isolated) → QEMU → nested 
 ```
 
 ```sh
-# 1. create a carrier VM, 2. boot a nested guest inside it (default: light Alpine)
-vm_create distro=ubuntu name=carrier
-microvm_create carrier=carrier name=bpf-lab
-# 3. drive it with the normal exec/file tools, by microVM name:
-exec_script vm_id=bpf-lab interpreter=bash script="bpftrace -e 'tracepoint:syscalls:sys_enter_execve { printf(\"%s\\n\", comm); }'"
+# 1. open a carrier VM, 2. open a nested guest inside it (default: light Alpine)
+workspace_open kind=vm distro=ubuntu name=carrier
+workspace_open kind=microvm carrier=carrier name=bpf-lab image=alpine
+# 3. run in it by name:
+run target=bpf-lab interpreter=bash script="bpftrace -e 'tracepoint:syscalls:sys_enter_execve { printf(\"%s\\n\", comm); }'"
 ```
 
 The guest is reached over SSH at `<carrier>.orb.local:<port>` (QEMU forwards a
-carrier-local port into the guest), so `exec`, `exec_script`, `file_push`, and
-`file_pull` all target a microVM by name with no special tooling.
+carrier-local port into the guest), so `run`, `file_put`, and `file_get` target
+a microVM by name.
 
-| Tool | Purpose |
-|------|---------|
-| `microvm_create` | boot a nested guest in a carrier (`image`: `alpine` default / `ubuntu`) |
-| `microvm_list` | list nested guests with carrier, image, state |
-| `microvm_start` / `microvm_stop` | reboot from / kill the staged guest |
-| `microvm_destroy` | kill QEMU and remove the guest, optionally purging its key |
+`run` accepts `secret_env` (`ENV_NAME` -> vault key) so a command can receive
+secrets from the vault. Orbit injects them over SSH stdin or into the container
+environment and logs only the environment variable names; see
+[ADR-014](docs/adr/ADR-014-exec-secret-env.md). `workspace_close` deletes the guest and its key.
 
 > **There is no `/dev/kvm` inside an OrbStack machine, so the guest runs under
 > QEMU TCG (software emulation): correct and fully isolated, but the emulated CPU
@@ -236,19 +243,27 @@ carrier-local port into the guest), so `exec`, `exec_script`, `file_push`, and
 
 ## Desired state
 
-Instead of issuing create/run/destroy calls one resource at a time, the agent
-can declare what should exist as a JSON document and let Orbit converge:
-
-| Tool | Purpose |
-|------|---------|
-| `state_plan` | dry-run: diff desired state against live resources, return the action list |
-| `state_apply` | create missing VMs, run missing containers, bring up missing compose stacks; already-running resources are left untouched |
-| `state_destroy` | tear down only the resources named in the document (VMs purge their keys) |
+`converge` takes a JSON document and creates whatever it names that is missing.
+Already-running resources are left untouched. Nothing is deleted; `workspace_close`
+and `service_down` do that.
 
 The document has three arrays — `vms` (name + distro), `containers` (image,
 optional name/ports/env), `composes` (project + file path or inline YAML).
-Nested microVMs are not part of this document; they are still managed with
-the `microvm_*` tools. See [internal/state](internal/state).
+Nested microVMs are opened with `workspace_open`. The MCP schema exposes those
+fields directly, and validation is shared with file parsing through
+`State.Validate()` (see [ADR-013](docs/adr/ADR-013-typed-state-schema-and-diagnostics.md)).
+See [internal/state](internal/state).
+
+## Resources
+
+| URI | What I read |
+|-----|-------------|
+| `orbit://info` | the loaded server version, platform, vault path, and audit path |
+| `orbit://doctor` | macOS, OrbStack, Docker, and path readiness |
+| `orbit://workspaces` | VMs, microVMs, and containers that exist now |
+| `orbit://secrets` | secret names, never values |
+
+These are MCP resources, so checking the loaded server does not spend a tool call.
 
 ## Development
 

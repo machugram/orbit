@@ -59,6 +59,22 @@ func TestMicroVMLifecycle(t *testing.T) {
 		t.Errorf("after destroy: state=%q destroyedAt=%d", got.State, got.DestroyedAt)
 	}
 
+	again := MicroVM{
+		ID: "uvm-1", Carrier: "carrier-b", Image: "alpine",
+		KeyID: "key-new", SSHPort: 24000, Handle: "/var/lib/orbit-microvm/uvm-1b",
+	}
+	if err := s.CreateMicroVM(again); err != nil {
+		t.Fatalf("recreate after destroy: %v", err)
+	}
+	got, _ = s.GetMicroVM("uvm-1")
+	if got.State != VMCreating || got.Carrier != "carrier-b" || got.KeyID != "key-new" ||
+		got.SSHPort != 24000 || got.DestroyedAt != 0 {
+		t.Errorf("recreated microvm kept tombstone fields: %+v", got)
+	}
+	if err := s.CreateMicroVM(again); err == nil {
+		t.Fatal("live duplicate name accepted")
+	}
+
 	if err := s.SetMicroVMState("ghost", VMStopped); !errors.Is(err, ErrNotFound) {
 		t.Errorf("SetMicroVMState(missing) = %v, want ErrNotFound", err)
 	}

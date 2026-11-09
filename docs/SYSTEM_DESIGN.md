@@ -22,12 +22,12 @@ Claude Agent (MCP client)
         ▼
 ┌─────────────────────────────────────────────────────────────────┐
 │  orbit binary  (cmd/orbit)                                       │
-│  vm_*  key_*  exec_*/file_*  cred_*  container_*/compose_*       │
-│  microvm_*  state_*  image_build                                 │
+│  run  workspace_open/close  service_up/down  file_put/get        │
+│  secret_put  converge          orbit://info doctor workspaces    │
 │                                                                  │
 │  vm.Manager + Provisioner   vault + keys   exec.Runner           │
 │  container.Manager          microvm.Manager   state.Reconciler   │
-│  audit (cross-cutting)                                           │
+│  diagnostics + audit (cross-cutting)                             │
 └──────┬──────────────┬────────────┬──────────────┬───────────────┘
        │              │            │              │
   orbctl / orb    SQLite       SSH to         docker /
@@ -76,7 +76,7 @@ systemd, OpenRC, runit.
 ### `internal/exec`
 SSH task runner. How an id maps to an endpoint and key is delegated to an
 `exec.Resolver`. Production wiring chains `microvm.NewResolver` in front of
-the vault resolver, so the same `exec` / `exec_script` / `file_*` tools drive
+the vault resolver, so `run`, `file_put`, and `file_get` drive
 both OrbStack VMs (`<vm>.orb.local:22`) and nested guests
 (`<carrier>.orb.local:<port>`) by name. Connections use the per-target
 Ed25519 key decrypted from the vault — never OrbStack's multiplexer.
@@ -87,6 +87,11 @@ Exposes:
   see ROADMAP §1.3)
 - `Push` / `Pull` — SFTP file transfer (pull capped at 32 MiB)
 - `ExecParallel` — fan-out with a semaphore-bounded WaitGroup
+
+`Exec`, `ExecScript`, and `ExecParallel` also support vault-backed
+`secret_env`. Tool handlers resolve vault keys to values, log only env-var
+names, and the runner injects the values over SSH stdin via `sh -s`, so they
+do not appear in the MCP transcript or the SSH command argv (ADR-014).
 
 ### `internal/container`
 Docker + Compose driver for OrbStack's built-in engine — the fast,
@@ -135,8 +140,22 @@ container primitives. A JSON document lists `vms`, `containers`, and
 `composes`; `Reconciler.Plan` diffs that against live resources,
 `Apply` creates/runs/ups what is missing (never deleting unlisted
 resources), and `Destroy` tears down only what the document names.
-Nested microVMs are out of scope for this document — they stay on the
-`microvm_*` tools.
+Nested microVMs are out of scope for this document — they stay on
+`workspace_open` / `workspace_close` with `kind=microvm`.
+
+The MCP handlers receive a typed `state.State`, so clients see a real object
+schema with `vms`, `containers`, and `composes`. `State.Validate()` is exported
+so the typed tool path and file/JSON path share the same validation rules
+(ADR-013).
+
+### `internal/tools`
+The MCP surface is nine jobs (`run`, `workspace_open`, `workspace_close`,
+`service_up`, `service_down`, `file_put`, `file_get`, `secret_put`,
+`converge`) plus resources. `orbit://info` reports version, platform, vault
+path, and audit path. `orbit://doctor` checks the macOS/OrbStack/Docker/path
+prerequisites. `orbit://workspaces` and `orbit://secrets` are the inventory.
+See ADR-015. Typed `converge` arguments still share `State.Validate()` with
+file parsing (ADR-013).
 
 ### `internal/audit`
 Append-only JSONL log at `~/.orbit/audit.log`. Every tool call is written
@@ -154,10 +173,10 @@ and stored in the Keychain.
 
 ---
 
-## Data Flow: `vm_create`
+## Data Flow: `workspace_open` (vm)
 
 ```
-agent calls vm_create(distro="alpine", name="worker-1")
+agent calls workspace_open(kind="vm", distro="alpine", name="worker-1")
   │
   ├─ Provisioner.Create()
   │    ├─ ensureBase("orbit-base-alpine")
@@ -174,20 +193,20 @@ agent calls vm_create(distro="alpine", name="worker-1")
   │    │
   │    └─ vm.Manager.SetKey("worker-1", keyID)
   │
-  └─ returns {vm_id, state, key_id, ssh_user, distro}
+  └─ returns {name, kind, state, ssh_user, public_key, distro}
 
-Warm bases (orbit-base-*) cannot be destroyed via vm_destroy.
+Warm bases (orbit-base-*) cannot be destroyed via workspace_close.
 Ephemeral VMs (`ephemeral` + idle TTL) are reaped in-process; `last_used_at`
 updates on successful exec/file ops.
 Agent namespace (`ORBIT_AGENT_NAMESPACE`) soft-scopes VM/microVM rows; bases are shared.
 
-audit: {"tool":"vm_create","detail":{"name":"worker-1","distro":"alpine"},"ok":true}
+audit: {"tool":"workspace_open","detail":{"name":"worker-1","distro":"alpine"},"ok":true}
 ```
 
-## Data Flow: `exec`
+## Data Flow: `run` on a VM
 
 ```
-agent calls exec(vm_id="worker-1", command="uname -a")
+agent calls run(target="worker-1", command="uname -a")
   │
   ├─ exec.Runner.Exec()
   │    ├─ resolver.Resolve("worker-1")
@@ -203,11 +222,11 @@ agent calls exec(vm_id="worker-1", command="uname -a")
 A microVM id takes the other branch: `GetMicroVM("bpf-lab")` → guest key →
 `<carrier>.orb.local:<ssh_port>`. Same runner, no extra tools.
 
-## Data Flow: `container_run` with secret injection
+## Data Flow: `service_up` with secret injection
 
 ```
-agent calls container_run(image="postgres:16",
-                          secret_env={"POSTGRES_PASSWORD": "prod-db-pw"})
+agent calls service_up(image="postgres:16", name="db",
+                       secret_env={"POSTGRES_PASSWORD": "prod-db-pw"})
   │   (the agent supplies only the env-var NAME and the vault KEY name)
   │
   ├─ container.Manager.Run()
@@ -220,9 +239,9 @@ agent calls container_run(image="postgres:16",
   │           with subprocess env carrying the value
   │           → docker copies POSTGRES_PASSWORD from its env into the container
   │
-  └─ returns {container_id, image}
+  └─ returns {name, host, kind}
 
-audit: {"tool":"container_run","detail":{"image":"postgres:16",
+audit: {"tool":"service_up","detail":{"image":"postgres:16",
         "secret_env":["POSTGRES_PASSWORD"]},"ok":true}   ← name only, no value
 ```
 
@@ -230,23 +249,23 @@ The secret value exists only in the vault (encrypted at rest) and transiently
 in the docker subprocess's environment. It is never in a tool argument, a
 result, argv (`ps`), or the audit log.
 
-## Data Flow: `state_apply`
+## Data Flow: `converge`
 
 ```
-agent calls state_apply(state={vms:[{name:"w1",distro:"alpine"}], ...})
+agent calls converge(state={vms:[{name:"w1",distro:"alpine"}], ...})
   │
-  ├─ state.ParseState()  → validate names, distros, compose file-or-yaml
+  ├─ MCP SDK decodes typed state.State
+  ├─ State.Validate()    → validate names, distros, compose file-or-yaml
   ├─ Reconciler.diff()   → list live VMs/containers; emit create/run/up or noop
   └─ Reconciler.execute()
-       ├─ missing VM        → Provisioner.Create (same path as vm_create)
+       ├─ missing VM        → Provisioner.Create (same path as workspace_open)
        ├─ missing container → container.Manager.Run
        ├─ compose project   → container.Manager.ComposeUp
        └─ already present   → noop
 ```
 
-`state_plan` is the same diff with no execute. `state_destroy` diffs in
-destroy mode and only touches resources named in the document (VMs are
-destroyed with `purge_keys=true`).
+`converge` does not delete. `workspace_close` and `service_down` remove a
+workspace or service; closing a VM purges its key.
 
 ---
 
@@ -263,7 +282,10 @@ destroyed with `purge_keys=true`).
 | No SSH multiplexer | Direct `<vm>.orb.local:22` (or `<carrier>.orb.local:<port>` for microVMs) preserves per-target credential isolation |
 | Nested kernel isolation | microVM guests run under QEMU TCG with their own kernel; eBPF cannot reach the shared OrbStack kernel (ADR-012) |
 | Container secret injection | `secret_env` → bare `docker -e NAME`; value in subprocess env only, never argv/model/audit |
+| Exec secret injection | `secret_env` → SSH stdin wrapper; value in remote environment only, never model/audit/SSH argv |
 | Passphrase bootstrap | macOS Keychain or env var; auto-generated 32-byte hex on first run |
+| MCP diagnostics | `orbit://info` / `orbit://doctor` are read-only and return paths/status only, never secret values |
+| Secret reads | There is no tool that returns a secret value. `orbit://secrets` lists names |
 
 ---
 

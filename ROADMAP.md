@@ -1,5 +1,10 @@
 # Orbit — Performance & Feature Roadmap
 
+The agent-facing MCP surface is `run`, `workspace_open`, `workspace_close`,
+`service_up`, `service_down`, `file_put`, `file_get`, `secret_put`, and
+`converge`, plus `orbit://` resources (ADR-015). Items below name the
+managers those tools call.
+
 ## 1. Performance
 
 ### 1.1 Cache a provisioned base image (biggest win) — L — **done**
@@ -81,7 +86,7 @@ OrbStack CLI support (verify `orbctl` exposes it in the installed version);
 until then, implement via clone-of-stopped-VM. Pairs with 1.1.
 
 ### 2.3 Expose resource limits & network isolation in `vm_create` — S
-**Where:** `CreateSpec` in [internal/vm/types.go](internal/vm/types.go), `vm_create` args in [internal/tools/vm_tools.go](internal/tools/vm_tools.go)
+**Where:** `CreateSpec` in [internal/vm/types.go](internal/vm/types.go), `workspace_open` in [internal/tools/workspace.go](internal/tools/workspace.go)
 
 `orbctl create` already supports `--cpus`, `--memory`, `--disk`, and
 `--isolate-network` (block the VM from other machines and host IPs). Surface

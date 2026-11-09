@@ -11,6 +11,8 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"flag"
 	"fmt"
 	"log"
@@ -88,9 +90,8 @@ func run(ctx context.Context, distro string, keep bool) error {
 	}
 	step("VM %s is %s (key %s)", rec.ID, rec.State, rec.KeyID)
 
-	// cloud-init may still be finishing when the VM reports running; SSH
-	// retries paper over the gap.
-	step("exec: uname -a && id (retrying while cloud-init settles)")
+	// The VM can report running before sshd accepts connections.
+	step("exec: uname -a && id (retrying until sshd accepts the key)")
 	res, err := retryExec(ctx, runner, name, "uname -a && id")
 	if err != nil {
 		return fmt.Errorf("exec: %w", err)
@@ -148,15 +149,24 @@ func run(ctx context.Context, distro string, keep bool) error {
 	if err != nil {
 		return err
 	}
-	newPub, _ := newKP.AuthorizedKey()
-	res, err = runner.Exec(ctx, name,
-		fmt.Sprintf(`printf '%%s\n' '%s' > ~/.ssh/authorized_keys`, newPub))
-	if err != nil || res.ExitCode != 0 {
-		return fmt.Errorf("rotating authorized_keys: %v (res %+v)", err, res)
+	newPub, err := newKP.AuthorizedKey()
+	if err != nil {
+		return err
+	}
+	home, err := runner.Exec(ctx, name, `printf %s "$HOME"`)
+	if err != nil || home.ExitCode != 0 {
+		return fmt.Errorf("resolving home: %v (res %+v)", err, home)
+	}
+	authKeys := strings.TrimSpace(home.Stdout) + "/.ssh/authorized_keys"
+	if err := runner.PushBytes(ctx, name, []byte(strings.TrimSpace(newPub)+"\n"), authKeys, 0o600); err != nil {
+		return fmt.Errorf("rotating authorized_keys: %w", err)
 	}
 	if _, err := km.Put(vm.KeyLabel(name), name, newKP); err != nil {
 		return err
 	}
+	// Drop the connection that authenticated with the old key. The next
+	// dial has to present the key just written to the vault.
+	runner.Invalidate(name)
 	res, err = retryExec(ctx, runner, name, "echo rotated-key-works")
 	if err != nil || res.ExitCode != 0 {
 		return fmt.Errorf("exec with rotated key: %v (res %+v)", err, res)
@@ -169,27 +179,47 @@ func run(ctx context.Context, distro string, keep bool) error {
 	return nil
 }
 
-// retryExec retries to absorb cloud-init lag: sshd only becomes reachable
-// after cloud-init's package phase installs openssh-server.
-func retryExec(ctx context.Context, r *exec.Runner, vmID, cmd string) (*exec.Result, error) {
-	deadline := time.Now().Add(4 * time.Minute)
+// commandRunner is the Exec method the retry loop needs. *exec.Runner
+// implements it; tests pass a fake.
+type commandRunner interface {
+	Exec(ctx context.Context, vmID, command string) (*exec.Result, error)
+}
+
+// retryExec retries to absorb the gap between "VM running" and sshd
+// accepting connections. The window is 4 minutes, the pause 3 seconds.
+func retryExec(ctx context.Context, r commandRunner, vmID, cmd string) (*exec.Result, error) {
+	return retryExecFor(ctx, r, vmID, cmd, 4*time.Minute, 3*time.Second)
+}
+
+func retryExecFor(ctx context.Context, r commandRunner, vmID, cmd string, window, pause time.Duration) (*exec.Result, error) {
+	deadline := time.Now().Add(window)
+	var res *exec.Result
+	var err error
 	for {
-		res, err := r.Exec(ctx, vmID, cmd)
+		res, err = r.Exec(ctx, vmID, cmd)
 		if err == nil {
 			return res, nil
 		}
-		if time.Now().After(deadline) || ctx.Err() != nil {
+		if cerr := ctx.Err(); cerr != nil {
+			return res, cerr
+		}
+		if time.Now().After(deadline) {
 			return res, err
 		}
-		time.Sleep(3 * time.Second)
+		timer := time.NewTimer(pause)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return res, ctx.Err()
+		case <-timer.C:
+		}
 	}
 }
 
 func vmName() string {
-	b := make([]byte, 4)
-	if f, err := os.Open("/dev/urandom"); err == nil {
-		f.Read(b)
-		f.Close()
+	var b [4]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		panic(err)
 	}
-	return fmt.Sprintf("%x", b)
+	return hex.EncodeToString(b[:])
 }

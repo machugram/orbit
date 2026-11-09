@@ -113,6 +113,19 @@ func TestExecAuthenticatesAsVMUser(t *testing.T) {
 	}
 }
 
+func TestExecWithEnvInjectsSecretsOverStdin(t *testing.T) {
+	r := testEnv(t, "vm1")
+	res, err := r.ExecWithEnv(context.Background(), "vm1", "printenv TOKEN", map[string]string{
+		"TOKEN": "s3cr3t value",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Stdout != "s3cr3t value\n" {
+		t.Errorf("stdout = %q", res.Stdout)
+	}
+}
+
 func TestExecContextTimeout(t *testing.T) {
 	r := testEnv(t, "vm1")
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
@@ -226,6 +239,19 @@ func TestExecScriptUploadsRunsAndCleans(t *testing.T) {
 	}
 }
 
+func TestExecScriptWithEnvInjectsSecrets(t *testing.T) {
+	r := testEnv(t, "vm1")
+	res, err := r.ExecScriptWithEnv(context.Background(), "vm1", "#!/bin/sh\nprintenv TOKEN\n", "sh", map[string]string{
+		"TOKEN": "script secret",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Stdout != "script secret\n" {
+		t.Errorf("script output = %q", res.Stdout)
+	}
+}
+
 func TestExecParallel(t *testing.T) {
 	r := testEnv(t, "vm-a", "vm-b", "vm-c")
 	results := r.ExecParallel(context.Background(), []string{"vm-a", "vm-b", "vm-c", "ghost"}, "whoami", 2)
@@ -246,6 +272,21 @@ func TestExecParallel(t *testing.T) {
 	}
 	if results[3].Err == "" {
 		t.Error("ghost VM should have reported an error")
+	}
+}
+
+func TestExecParallelWithEnv(t *testing.T) {
+	r := testEnv(t, "vm-a", "vm-b")
+	results := r.ExecParallelWithEnv(context.Background(), []string{"vm-a", "vm-b"}, "printenv TOKEN", 2, map[string]string{
+		"TOKEN": "parallel secret",
+	})
+	for _, res := range results {
+		if res.Err != "" {
+			t.Fatalf("%s failed: %s", res.VMID, res.Err)
+		}
+		if res.Result.Stdout != "parallel secret\n" {
+			t.Errorf("%s stdout = %q", res.VMID, res.Result.Stdout)
+		}
 	}
 }
 

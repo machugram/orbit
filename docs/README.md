@@ -16,6 +16,9 @@
 | [adr/ADR-010](adr/ADR-010-vault-passphrase-keychain.md) | Vault passphrase via macOS Keychain with env-var override |
 | [adr/ADR-011](adr/ADR-011-ssh-host-key-trust-model.md) | Trust-on-connect for loopback SSH; pinning deferred |
 | [adr/ADR-012](adr/ADR-012-nested-microvm-ebpf-isolation.md) | Nested QEMU/TCG guests with their own kernel for eBPF |
+| [adr/ADR-013](adr/ADR-013-typed-state-schema-and-diagnostics.md) | Typed state tool schemas and `orbit_*` diagnostics |
+| [adr/ADR-014](adr/ADR-014-exec-secret-env.md) | Vault secret injection for `exec*` tools |
+| [adr/ADR-015](adr/ADR-015-job-shaped-mcp.md) | Job-shaped MCP tools; inventory and diagnostics are resources |
 
 The original brief (TypeScript-era, cloud-init, SSH multiplexer) is
 [ORBIT_SPEC.md](../ORBIT_SPEC.md); this tree and the ADRs are the source of

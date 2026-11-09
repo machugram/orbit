@@ -243,6 +243,13 @@ func TestStartStopDestroyLifecycle(t *testing.T) {
 		t.Errorf("delete not forced: %v", call)
 	}
 
+	if _, err := m.Create(ctx, CreateSpec{Distro: "alpine", Name: "lc"}); err != nil {
+		t.Fatalf("recreate after destroy: %v", err)
+	}
+	if rec, _ := s.GetVM("lc"); rec.State != vault.VMRunning || rec.Distro != "alpine" {
+		t.Errorf("after recreate: %+v", rec)
+	}
+
 	if err := m.Start(ctx, "ghost"); !errors.Is(err, vault.ErrNotFound) {
 		t.Errorf("start on unknown vm: %v, want ErrNotFound", err)
 	}
