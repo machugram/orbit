@@ -26,6 +26,7 @@ import (
 //	fail            -> "went wrong\n" on stderr, exit 3
 //	whoami          -> the SSH user on stdout, exit 0
 //	sleep           -> blocks until the connection drops
+//	printenv <name> -> prints an injected env var
 //	run '<path>'    -> contents of local file <path> on stdout, exit 0
 //	rm -f '<path>'  -> removes local file <path>, exit 0
 func startSSHServer(t *testing.T, authorized map[string]ssh.PublicKey) string {
@@ -119,12 +120,20 @@ func serveSession(user string, ch ssh.Channel, reqs <-chan *ssh.Request) {
 }
 
 func runFakeCommand(user, command string, ch ssh.Channel) {
+	runFakeCommandWithEnv(user, command, ch, nil)
+}
+
+func runFakeCommandWithEnv(user, command string, ch ssh.Channel, env map[string]string) {
 	exit := func(code uint32) {
 		ch.SendRequest("exit-status", false, ssh.Marshal(&struct{ Status uint32 }{code}))
 		ch.Close()
 	}
 	unquote := func(s string) string {
-		return strings.Trim(strings.TrimSpace(s), "'")
+		s = strings.TrimSpace(s)
+		if strings.HasPrefix(s, "'") && strings.HasSuffix(s, "'") {
+			s = strings.TrimPrefix(strings.TrimSuffix(s, "'"), "'")
+		}
+		return strings.ReplaceAll(s, `'\''`, `'`)
 	}
 
 	switch {
@@ -137,6 +146,12 @@ func runFakeCommand(user, command string, ch ssh.Channel) {
 	case command == "whoami":
 		io.WriteString(ch, user+"\n")
 		exit(0)
+	case strings.HasPrefix(command, "printenv "):
+		name := strings.TrimSpace(strings.TrimPrefix(command, "printenv "))
+		if val, ok := env[name]; ok {
+			io.WriteString(ch, val+"\n")
+		}
+		exit(0)
 	case command == "sleep":
 		// Block until the client tears the connection down: writes start
 		// failing once the connection is gone.
@@ -146,6 +161,15 @@ func runFakeCommand(user, command string, ch ssh.Channel) {
 			}
 			time.Sleep(20 * time.Millisecond)
 		}
+	case command == "sh -s":
+		data, err := io.ReadAll(ch)
+		if err != nil {
+			io.WriteString(ch.Stderr(), err.Error()+"\n")
+			exit(1)
+			return
+		}
+		wrappedCommand, wrappedEnv := parseEnvWrapper(string(data), unquote)
+		runFakeCommandWithEnv(user, wrappedCommand, ch, wrappedEnv)
 	case strings.HasPrefix(command, "run "), strings.HasPrefix(command, "sh "):
 		// "run <path>" / "sh <path>": read the uploaded script and echo it back
 		// (the latter lets tests use a real allowlisted interpreter name).
@@ -156,7 +180,9 @@ func runFakeCommand(user, command string, ch ssh.Channel) {
 			exit(1)
 			return
 		}
-		ch.Write(data)
+		if handled := writeScriptOutput(string(data), env, ch); !handled {
+			ch.Write(data)
+		}
 		exit(0)
 	case strings.HasPrefix(command, "rm -f "):
 		os.Remove(unquote(strings.TrimPrefix(command, "rm -f ")))
@@ -165,4 +191,38 @@ func runFakeCommand(user, command string, ch ssh.Channel) {
 		io.WriteString(ch.Stderr(), "unknown fake command: "+command+"\n")
 		exit(127)
 	}
+}
+
+func writeScriptOutput(script string, env map[string]string, ch ssh.Channel) bool {
+	handled := false
+	for _, line := range strings.Split(script, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "printenv ") {
+			handled = true
+			name := strings.TrimSpace(strings.TrimPrefix(line, "printenv "))
+			if val, ok := env[name]; ok {
+				io.WriteString(ch, val+"\n")
+			}
+		}
+	}
+	return handled
+}
+
+func parseEnvWrapper(script string, unquote func(string) string) (string, map[string]string) {
+	env := map[string]string{}
+	command := ""
+	for _, line := range strings.Split(script, "\n") {
+		line = strings.TrimSpace(line)
+		switch {
+		case strings.HasPrefix(line, "export "):
+			pair := strings.TrimPrefix(line, "export ")
+			name, value, ok := strings.Cut(pair, "=")
+			if ok {
+				env[name] = unquote(value)
+			}
+		case strings.HasPrefix(line, "exec sh -c "):
+			command = unquote(strings.TrimPrefix(line, "exec sh -c "))
+		}
+	}
+	return command, env
 }

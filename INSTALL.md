@@ -46,8 +46,8 @@ claude mcp add orbit -- $(go env GOPATH)/bin/orbit
 ## Option 3: Homebrew
 
 The in-tree [Formula/orbit.rb](Formula/orbit.rb) is a **template**. It is not
-installable until a release is cut and the SHA256 placeholders are replaced
-(see [RELEASE.md](RELEASE.md)). Until then, use Option 1.
+installable until a release is cut and the SHA256 placeholders are replaced.
+Until then, use Option 1.
 
 Once the formula is published to a tap:
 
@@ -61,6 +61,21 @@ Then register with Claude:
 claude mcp add orbit -- $(which orbit)
 ```
 
+## Codex / ChatGPT Work
+
+Build or install the binary somewhere stable, then add Orbit to
+`~/.codex/config.toml`:
+
+```toml
+[mcp_servers.orbit]
+command = "/absolute/path/to/orbit"
+startup_timeout_sec = 120
+```
+
+After a reload, read `orbit://info`
+to confirm which binary and paths are active, then read `orbit://doctor` to check
+macOS, OrbStack, Docker, and vault/audit path readiness.
+
 ## Verifying the Installation
 
 After registration, you should see `orbit` listed in Claude's MCP servers:
@@ -69,10 +84,15 @@ After registration, you should see `orbit` listed in Claude's MCP servers:
 
 **VS Code:** Extensions → Claude → MCP Servers → "orbit" listed
 
+**Codex / ChatGPT Work:** the tool list includes `run`,
+`workspace_open`, `service_up`, `secret_put`, and `converge`, plus resources
+`orbit://info` and `orbit://doctor`.
+
 If Orbit fails to start, check:
 - OrbStack is running: `orbctl list` should work
 - Docker is accessible: `docker ps` should work
 - `ORBIT_VAULT_PATH` and `ORBIT_AUDIT_PATH` directories are writable (they default to `~/.orbit/`)
+- `orbit://doctor` reports every check as `ok: true`
 
 ## Troubleshooting
 

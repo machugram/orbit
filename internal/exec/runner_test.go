@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -26,6 +27,11 @@ func testEnv(t *testing.T, vmIDs ...string) *Runner {
 // testEnvFull is testEnv but also returns the backing store and key manager for
 // tests that need to mutate vault state directly.
 func testEnvFull(t *testing.T, vmIDs ...string) (*Runner, *vault.Store, *keys.Manager) {
+	t.Helper()
+	return testEnvOpts(t, nil, vmIDs...)
+}
+
+func testEnvOpts(t *testing.T, opts []RunnerOption, vmIDs ...string) (*Runner, *vault.Store, *keys.Manager) {
 	t.Helper()
 
 	s, err := vault.Open(filepath.Join(t.TempDir(), "vault.db"), []byte("pw"))
@@ -58,11 +64,13 @@ func testEnvFull(t *testing.T, vmIDs ...string) (*Runner, *vault.Store, *keys.Ma
 	}
 
 	addr := startSSHServer(t, authorized)
-	// Route every VM to the test server, keeping per-VM users so tests
-	// can tell connections apart (mirrors one-sshd-per-VM in production).
-	r := NewRunner(s, km, WithTarget(func(vmID string) (string, string) {
-		return addr, "agent@" + vmID
-	}))
+	base := []RunnerOption{
+		WithTarget(func(vmID string) (string, string) {
+			return addr, "agent@" + vmID
+		}),
+	}
+	base = append(base, opts...)
+	r := NewRunner(s, km, base...)
 	return r, s, km
 }
 
@@ -102,6 +110,19 @@ func TestExecAuthenticatesAsVMUser(t *testing.T) {
 	}
 	if res.Stdout != "agent@sandbox-7\n" {
 		t.Errorf("ssh user = %q, want agent@sandbox-7", strings.TrimSpace(res.Stdout))
+	}
+}
+
+func TestExecWithEnvInjectsSecretsOverStdin(t *testing.T) {
+	r := testEnv(t, "vm1")
+	res, err := r.ExecWithEnv(context.Background(), "vm1", "printenv TOKEN", map[string]string{
+		"TOKEN": "s3cr3t value",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Stdout != "s3cr3t value\n" {
+		t.Errorf("stdout = %q", res.Stdout)
 	}
 }
 
@@ -218,6 +239,19 @@ func TestExecScriptUploadsRunsAndCleans(t *testing.T) {
 	}
 }
 
+func TestExecScriptWithEnvInjectsSecrets(t *testing.T) {
+	r := testEnv(t, "vm1")
+	res, err := r.ExecScriptWithEnv(context.Background(), "vm1", "#!/bin/sh\nprintenv TOKEN\n", "sh", map[string]string{
+		"TOKEN": "script secret",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Stdout != "script secret\n" {
+		t.Errorf("script output = %q", res.Stdout)
+	}
+}
+
 func TestExecParallel(t *testing.T) {
 	r := testEnv(t, "vm-a", "vm-b", "vm-c")
 	results := r.ExecParallel(context.Background(), []string{"vm-a", "vm-b", "vm-c", "ghost"}, "whoami", 2)
@@ -238,5 +272,79 @@ func TestExecParallel(t *testing.T) {
 	}
 	if results[3].Err == "" {
 		t.Error("ghost VM should have reported an error")
+	}
+}
+
+func TestExecParallelWithEnv(t *testing.T) {
+	r := testEnv(t, "vm-a", "vm-b")
+	results := r.ExecParallelWithEnv(context.Background(), []string{"vm-a", "vm-b"}, "printenv TOKEN", 2, map[string]string{
+		"TOKEN": "parallel secret",
+	})
+	for _, res := range results {
+		if res.Err != "" {
+			t.Fatalf("%s failed: %s", res.VMID, res.Err)
+		}
+		if res.Result.Stdout != "parallel secret\n" {
+			t.Errorf("%s stdout = %q", res.VMID, res.Result.Stdout)
+		}
+	}
+}
+
+func TestSSHPoolReusesDial(t *testing.T) {
+	var dials atomic.Int32
+	r, _, _ := testEnvOpts(t, []RunnerOption{
+		WithOnDial(func() { dials.Add(1) }),
+		WithIdleTTL(time.Minute),
+	}, "vm1")
+
+	ctx := context.Background()
+	for i := 0; i < 3; i++ {
+		if _, err := r.Exec(ctx, "vm1", "echo hi"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if n := dials.Load(); n != 1 {
+		t.Fatalf("dials = %d, want 1 (pooled reuse)", n)
+	}
+	if r.poolSize() != 1 {
+		t.Fatalf("pool size = %d, want 1", r.poolSize())
+	}
+}
+
+func TestExecScriptSingleDial(t *testing.T) {
+	var dials atomic.Int32
+	r, _, _ := testEnvOpts(t, []RunnerOption{
+		WithOnDial(func() { dials.Add(1) }),
+		WithIdleTTL(time.Minute),
+	}, "vm1")
+
+	if _, err := r.ExecScript(context.Background(), "vm1", "#!/bin/sh\necho ok\n", "sh"); err != nil {
+		t.Fatal(err)
+	}
+	if n := dials.Load(); n != 1 {
+		t.Fatalf("ExecScript dials = %d, want 1", n)
+	}
+}
+
+func TestInvalidateForcesRedial(t *testing.T) {
+	var dials atomic.Int32
+	r, _, _ := testEnvOpts(t, []RunnerOption{
+		WithOnDial(func() { dials.Add(1) }),
+		WithIdleTTL(time.Minute),
+	}, "vm1")
+
+	ctx := context.Background()
+	if _, err := r.Exec(ctx, "vm1", "echo a"); err != nil {
+		t.Fatal(err)
+	}
+	r.Invalidate("vm1")
+	if r.poolSize() != 0 {
+		t.Fatalf("pool size after invalidate = %d", r.poolSize())
+	}
+	if _, err := r.Exec(ctx, "vm1", "echo b"); err != nil {
+		t.Fatal(err)
+	}
+	if n := dials.Load(); n != 2 {
+		t.Fatalf("dials = %d, want 2 after invalidate", n)
 	}
 }

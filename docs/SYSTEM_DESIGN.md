@@ -22,12 +22,12 @@ Claude Agent (MCP client)
         ▼
 ┌─────────────────────────────────────────────────────────────────┐
 │  orbit binary  (cmd/orbit)                                       │
-│  vm_*  key_*  exec_*/file_*  cred_*  container_*/compose_*       │
-│  microvm_*  state_*  image_build                                 │
+│  run  workspace_open/close  service_up/down  file_put/get        │
+│  secret_put  converge          orbit://info doctor workspaces secrets │
 │                                                                  │
 │  vm.Manager + Provisioner   vault + keys   exec.Runner           │
 │  container.Manager          microvm.Manager   state.Reconciler   │
-│  audit (cross-cutting)                                           │
+│  diagnostics + audit (cross-cutting)                             │
 └──────┬──────────────┬────────────┬──────────────┬───────────────┘
        │              │            │              │
   orbctl / orb    SQLite       SSH to         docker /
@@ -50,7 +50,9 @@ decrypting to garbage.
 Schema: four tables — `vault_meta` (salt + canary), `credentials` (arbitrary
 secrets keyed by namespace+key), `vms` (VM records with state and key_id
 foreign key), `microvms` (nested guests: carrier, image, forwarded SSH port,
-key_id).
+key_id). Closing a VM sets `state=destroyed` and leaves the row. `CreateVM`
+inserts, and on a primary-key conflict it resets that row only when the state
+is `destroyed`, so the same name can be opened again. A live name is rejected.
 
 ### `internal/keys`
 Ed25519 keypair generation and vault-backed key manager. Private keys are
@@ -65,41 +67,48 @@ Two cooperating types:
 `stop`, `destroy`, and poll state. State of truth is always OrbStack; the
 vault's `vms` table caches metadata (distro, key_id, timestamps).
 
-**`Provisioner`** — orchestrates the `vm_create` lifecycle: generate a
-keypair → orbctl create → run a root script via `orb -u root sh -s` →
-set the key on the VM record. On any failure both the VM and key are cleaned
-up so nothing leaks. The provisioning script (`distro.go`) is a single
-distro-agnostic POSIX sh script that detects the package manager and init
-system at runtime — it covers apt, dnf, yum, zypper, pacman, apk, xbps and
-systemd, OpenRC, runit.
+**`Provisioner`** — the path behind `workspace_open` with `kind=vm`. The
+first machine of a distro is created and fully provisioned, then kept as
+`orbit-base-<distro>`. Later machines are `orbctl clone` plus an
+`authorized_keys` inject. The cold script (`distro.go`) runs as root via
+`orb -m <vm> -u root sh -s`. It detects apt, dnf, yum, zypper, pacman, apk,
+or xbps, and systemd, OpenRC, or runit. It also rewrites a password-locked
+`!` shadow field to `*`, because OpenSSH refuses a pubkey while the account
+is locked. A failure deletes the new machine and revokes its key. Warm bases
+cannot be destroyed through `workspace_close`.
 
 ### `internal/exec`
 SSH task runner. How an id maps to an endpoint and key is delegated to an
 `exec.Resolver`. Production wiring chains `microvm.NewResolver` in front of
-the vault resolver, so the same `exec` / `exec_script` / `file_*` tools drive
+the vault resolver, so `run`, `file_put`, and `file_get` drive
 both OrbStack VMs (`<vm>.orb.local:22`) and nested guests
 (`<carrier>.orb.local:<port>`) by name. Connections use the per-target
 Ed25519 key decrypted from the vault — never OrbStack's multiplexer.
 Exposes:
 
 - `Exec` — single command, returns stdout/stderr/exit code
-- `ExecScript` — push a script, execute it, delete it (3 connections today;
-  see ROADMAP §1.3)
-- `Push` / `Pull` — SFTP file transfer (pull capped at 32 MiB)
-- `ExecParallel` — fan-out with a semaphore-bounded WaitGroup
+- `ExecScript` — upload a script, run it, and delete it on one pooled SSH connection
+- `Push` / `PushBytes` / `Pull` — SFTP transfer. `Pull` is capped at 32 MiB
+- `ExecParallel` — fan-out with a semaphore of 8 (`DefaultParallelism`). `run` with `targets` uses the same limit
+
+`Exec`, `ExecScript`, and `ExecParallel` also support vault-backed
+`secret_env`. Tool handlers resolve vault keys to values, log only env-var
+names, and the runner injects the values over SSH stdin via `sh -s`, so they
+do not appear in the MCP transcript or the SSH command argv (ADR-014).
 
 ### `internal/container`
 Docker + Compose driver for OrbStack's built-in engine — the fast,
 ephemeral counterpart to full VMs (containers start in 1–3s). Wraps `docker`
-and `docker compose` via an injectable `DockerRunner`. Exposes container
-lifecycle (`Run`/`Exec`/`Logs`/`List`/`Stop`/`Remove`), `Build`, and full
-multi-service stack management: `ComposeUp` (with per-service `Scale`),
-`ComposeDown`, `ComposeLogs`, `ComposePs`, and `ComposeBuild`, from a host
-file or inline YAML. Services in a project share a network and resolve each
-other by name. `ComposePs` surfaces each service's state, health, and
-`<container>.orb.local` host endpoint; `ComposeExec` runs a command in a
-service *by service name* by resolving its container via `ComposePs` and
-reusing the plain `Exec` path (avoiding an inline-file-on-stdin conflict).
+and `docker compose` via an injectable `DockerRunner`. The MCP jobs are
+`service_up`, `service_down`, and `run`. Under those, the manager exposes
+lifecycle (`Run`/`Exec`/`Logs`/`List`/`Stop`/`Remove`/`Start`), `Build`, and
+stack operations: `ComposeUp`, `ComposeDown`, `ComposeDownProject`,
+`ComposeLogs`, `ComposePs`, and `ComposeBuild`, from a host file or inline
+YAML. Services in a project share a network and resolve each other by name.
+`ComposePs` surfaces each service's state, health, and `<container>.orb.local`
+host. `ComposeExec` runs a command in a service by resolving its container
+through `ComposePs` and reusing `Exec`, because `docker compose exec` and
+`-f -` share one stdin.
 
 Its distinguishing feature is **vault secret injection**: `RunSpec.SecretEnv`
 maps an env-var name to a vault key. The value is read from the vault, placed
@@ -108,13 +117,12 @@ only in the docker subprocess's environment, and handed to docker as a bare
 log (see ADR-005). Containers are not mirrored in the vault; `docker ps` is
 the source of truth.
 
-`compose_up`, `compose_down`, `compose_logs`, and `compose_build` accept either
-a host file path or **inline YAML piped on stdin** via `docker compose -f -`,
-so an agent can define and launch a stack without writing host files (see
-ADR-008). `ComposeExec` resolves a service's running container via `ComposePs`
-and reuses the plain `docker exec` path, avoiding a stdin conflict with the
-inline-YAML approach (see ADR-006). Credential IDs use `crypto/rand` hex via
-`newID()`, keeping the module's direct dependency list minimal (see ADR-007).
+`service_up` accepts a host compose file or inline YAML. Inline YAML is piped
+with `docker compose -f -` so the server never writes a temp file (ADR-008).
+A relative `build:` context is resolved against the orbit process working
+directory. `service_down` for a project is `docker compose -p <project> down`
+and does not need the file. Credential IDs use `crypto/rand` hex via
+`newID()` (ADR-007).
 
 ### `internal/microvm`
 Nested QEMU/TCG guests running inside a carrier OrbStack VM, each with its
@@ -135,16 +143,30 @@ container primitives. A JSON document lists `vms`, `containers`, and
 `composes`; `Reconciler.Plan` diffs that against live resources,
 `Apply` creates/runs/ups what is missing (never deleting unlisted
 resources), and `Destroy` tears down only what the document names.
-Nested microVMs are out of scope for this document — they stay on the
-`microvm_*` tools.
+Nested microVMs are out of scope for this document — they stay on
+`workspace_open` / `workspace_close` with `kind=microvm`.
+
+The MCP handlers receive a typed `state.State`, so clients see a real object
+schema with `vms`, `containers`, and `composes`. `State.Validate()` is exported
+so the typed tool path and file/JSON path share the same validation rules
+(ADR-013).
+
+### `internal/tools`
+The MCP surface is nine jobs (`run`, `workspace_open`, `workspace_close`,
+`service_up`, `service_down`, `file_put`, `file_get`, `secret_put`,
+`converge`) plus resources. `orbit://info` reports version, platform, vault
+path, and audit path. `orbit://doctor` checks the macOS/OrbStack/Docker/path
+prerequisites. `orbit://workspaces` and `orbit://secrets` are the inventory.
+See ADR-015. Typed `converge` arguments still share `State.Validate()` with
+file parsing (ADR-013).
 
 ### `internal/audit`
 Append-only JSONL log at `~/.orbit/audit.log`. Every tool call is written
 with a nanosecond timestamp, tool name, call detail, and success/error. No
 secret values are ever logged — the constraint is enforced by design: tool
 handlers log only metadata (VM IDs, key labels, namespaces). This is the
-Phase-1 observability primitive; structured `slog` logging, per-call timing,
-and `container_stats`/`vm_stats` are deferred to ROADMAP §4 (see ADR-009).
+observability primitive. The log records success or error, not duration.
+Structured logging and live resource stats are not implemented (ADR-009).
 
 ### `internal/keychain`
 Resolves the vault passphrase at startup: `ORBIT_PASSPHRASE` env var takes
@@ -154,38 +176,40 @@ and stored in the Keychain.
 
 ---
 
-## Data Flow: `vm_create`
+## Data Flow: `workspace_open` (vm)
 
 ```
-agent calls vm_create(distro="alpine", name="worker-1")
+agent calls workspace_open(kind="vm", distro="alpine", name="worker-1")
   │
   ├─ Provisioner.Create()
+  │    ├─ ensureBase("orbit-base-alpine")
+  │    │    └─ (cold) Create + full provision once per distro
+  │    │
   │    ├─ keys.Generate("vm-worker-1", "worker-1")
   │    │    └─ Ed25519 keygen → vault.SetCredential (encrypted)
   │    │
-  │    ├─ vm.Manager.Create() → orbctl create --isolated worker-1
-  │    │    └─ poll orbctl until state=running
+  │    ├─ vm.Manager.Clone(orbit-base-alpine → worker-1)
+  │    │    └─ orbctl clone; poll until running
   │    │
-  │    ├─ Provisioner.provision() (up to 5 retries, 3 min budget)
-  │    │    └─ orb -m worker-1 -u root sh -s [distro.go script] agent <pubkey>
-  │    │         ├─ apk add openssh
-  │    │         ├─ ssh-keygen -A
-  │    │         ├─ install authorized_keys
-  │    │         ├─ sed /etc/shadow  (unlock account)
-  │    │         ├─ rc-update add sshd; rc-service sshd start
-  │    │         └─ echo ORBIT_PROVISIONED
+  │    ├─ Provisioner.injectKey() (authorized_keys only; sshd already present)
+  │    │    └─ orb -m worker-1 -u root sh -s [keyInjectScript] agent <pubkey>
   │    │
   │    └─ vm.Manager.SetKey("worker-1", keyID)
   │
-  └─ returns {vm_id, state, key_id, ssh_user, distro}
+  └─ returns {name, kind, state, ssh_user, public_key, distro}
 
-audit: {"tool":"vm_create","detail":{"name":"worker-1","distro":"alpine"},"ok":true}
+Warm bases (orbit-base-*) cannot be destroyed via workspace_close.
+Ephemeral VMs (`ephemeral` + idle TTL) are reaped in-process; `last_used_at`
+updates on successful exec/file ops.
+Agent namespace (`ORBIT_AGENT_NAMESPACE`) soft-scopes VM/microVM rows; bases are shared.
+
+audit: {"tool":"workspace_open","detail":{"name":"worker-1","distro":"alpine"},"ok":true}
 ```
 
-## Data Flow: `exec`
+## Data Flow: `run` on a VM
 
 ```
-agent calls exec(vm_id="worker-1", command="uname -a")
+agent calls run(target="worker-1", command="uname -a")
   │
   ├─ exec.Runner.Exec()
   │    ├─ resolver.Resolve("worker-1")
@@ -201,16 +225,17 @@ agent calls exec(vm_id="worker-1", command="uname -a")
 A microVM id takes the other branch: `GetMicroVM("bpf-lab")` → guest key →
 `<carrier>.orb.local:<ssh_port>`. Same runner, no extra tools.
 
-## Data Flow: `container_run` with secret injection
+## Data Flow: `service_up` with secret injection
 
 ```
-agent calls container_run(image="postgres:16",
-                          secret_env={"POSTGRES_PASSWORD": "prod-db-pw"})
+agent calls service_up(image="postgres:16", name="db",
+                       secret_env={"POSTGRES_PASSWORD": "prod-db-pw"})
   │   (the agent supplies only the env-var NAME and the vault KEY name)
   │
   ├─ container.Manager.Run()
-  │    ├─ resolveSecrets("default", {...})
-  │    │    └─ vault.GetCredential("default", "prod-db-pw")  → value (in memory)
+  │    ├─ resolveSecrets(agent namespace, {...})
+  │    │    └─ vault.GetCredential("", "prod-db-pw")  → value (in memory)
+  │    │       an empty namespace is the process agent namespace
   │    │    └─ env  = {POSTGRES_PASSWORD: <value>}     (subprocess env only)
   │    │       flags = ["-e", "POSTGRES_PASSWORD"]      (bare, NO value in argv)
   │    │
@@ -218,9 +243,9 @@ agent calls container_run(image="postgres:16",
   │           with subprocess env carrying the value
   │           → docker copies POSTGRES_PASSWORD from its env into the container
   │
-  └─ returns {container_id, image}
+  └─ returns {name, host, kind}
 
-audit: {"tool":"container_run","detail":{"image":"postgres:16",
+audit: {"tool":"service_up","detail":{"image":"postgres:16",
         "secret_env":["POSTGRES_PASSWORD"]},"ok":true}   ← name only, no value
 ```
 
@@ -228,23 +253,23 @@ The secret value exists only in the vault (encrypted at rest) and transiently
 in the docker subprocess's environment. It is never in a tool argument, a
 result, argv (`ps`), or the audit log.
 
-## Data Flow: `state_apply`
+## Data Flow: `converge`
 
 ```
-agent calls state_apply(state={vms:[{name:"w1",distro:"alpine"}], ...})
+agent calls converge(state={vms:[{name:"w1",distro:"alpine"}], ...})
   │
-  ├─ state.ParseState()  → validate names, distros, compose file-or-yaml
+  ├─ MCP SDK decodes typed state.State
+  ├─ State.Validate()    → validate names, distros, compose file-or-yaml
   ├─ Reconciler.diff()   → list live VMs/containers; emit create/run/up or noop
   └─ Reconciler.execute()
-       ├─ missing VM        → Provisioner.Create (same path as vm_create)
+       ├─ missing VM        → Provisioner.Create (same path as workspace_open)
        ├─ missing container → container.Manager.Run
        ├─ compose project   → container.Manager.ComposeUp
        └─ already present   → noop
 ```
 
-`state_plan` is the same diff with no execute. `state_destroy` diffs in
-destroy mode and only touches resources named in the document (VMs are
-destroyed with `purge_keys=true`).
+`converge` does not delete. `workspace_close` and `service_down` remove a
+workspace or service; closing a VM purges its key.
 
 ---
 
@@ -261,7 +286,10 @@ destroyed with `purge_keys=true`).
 | No SSH multiplexer | Direct `<vm>.orb.local:22` (or `<carrier>.orb.local:<port>` for microVMs) preserves per-target credential isolation |
 | Nested kernel isolation | microVM guests run under QEMU TCG with their own kernel; eBPF cannot reach the shared OrbStack kernel (ADR-012) |
 | Container secret injection | `secret_env` → bare `docker -e NAME`; value in subprocess env only, never argv/model/audit |
+| Exec secret injection | `secret_env` → SSH stdin wrapper; value in remote environment only, never model/audit/SSH argv |
 | Passphrase bootstrap | macOS Keychain or env var; auto-generated 32-byte hex on first run |
+| MCP diagnostics | `orbit://info` / `orbit://doctor` are read-only and return paths/status only, never secret values |
+| Secret reads | There is no tool that returns a secret value. `orbit://secrets` lists names |
 
 ---
 
@@ -285,11 +313,8 @@ path for vault secret injection.
 
 ## Concurrency
 
-- **SQLite**: single write connection (`SetMaxOpenConns(1)`) with WAL mode.
-  Reads are fast but serialize behind writes. See ROADMAP §1.5 for the
-  read-pool improvement path.
-- **`exec_parallel`**: WaitGroup + buffered channel semaphore, default
-  parallelism 8 (`DefaultParallelism`). Each goroutine opens its own SSH
-  connection.
+- **SQLite**: one connection (`SetMaxOpenConns(1)`) with WAL mode. Reads and
+  writes share that connection, so a parallel `run` serializes its vault lookups.
+- **`run` with `targets`**: a semaphore of 8. Each target uses the SSH pool.
 - **MCP server**: `go-sdk` handles concurrent tool calls from the client.
   The vault's single connection is the natural serialization point.

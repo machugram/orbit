@@ -2,6 +2,7 @@ package tools
 
 import (
 	"context"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -39,6 +40,23 @@ func (r *recordingDocker) last() container.Invocation {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.invs[len(r.invs)-1]
+}
+
+func (r *recordingDocker) calls() []container.Invocation {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make([]container.Invocation, len(r.invs))
+	copy(out, r.invs)
+	return out
+}
+
+func findCall(calls []container.Invocation, first string) (container.Invocation, bool) {
+	for _, inv := range calls {
+		if len(inv.Args) > 0 && inv.Args[0] == first {
+			return inv, true
+		}
+	}
+	return container.Invocation{}, false
 }
 
 // startSessionWithDocker wires a full server using a caller-supplied docker
@@ -91,15 +109,19 @@ func TestContainerRunSecretEnvNeverHitsArgvViaTool(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	out := call(t, cs, "container_run", map[string]any{
+	out := call(t, cs, "service_up", map[string]any{
 		"image":      "postgres:16",
+		"name":       "db",
 		"secret_env": map[string]any{"POSTGRES_PASSWORD": "prod-db-pw"},
 	})
-	if out["container_id"] != "deadbeef" {
-		t.Errorf("container_id = %v", out["container_id"])
+	if out["name"] != "db" || strings.Contains(fmt.Sprint(out), "hunter2-SECRET") {
+		t.Fatalf("service_up = %v", out)
 	}
 
-	inv := rec.last()
+	inv, ok := findCall(rec.calls(), "run")
+	if !ok {
+		t.Fatal("docker run was not invoked")
+	}
 	argv := strings.Join(inv.Args, " ")
 	if strings.Contains(argv, "hunter2-SECRET") {
 		t.Fatalf("secret value leaked into argv: %s", argv)
@@ -117,25 +139,24 @@ func TestContainerLifecycleToolsHappyPath(t *testing.T) {
 		if len(inv.Args) > 0 && inv.Args[0] == "run" {
 			return []byte("abc123\n"), nil, nil
 		}
+		if len(inv.Args) > 0 && inv.Args[0] == "ps" {
+			return []byte("{\"ID\":\"abc\",\"Names\":\"box\",\"Image\":\"alpine\",\"State\":\"running\",\"Status\":\"Up\",\"Ports\":\"\"}\n"), nil, nil
+		}
 		return []byte("ok"), nil, nil
 	}}
 	cs, _ := startSessionWithDocker(t, rec.run)
 
-	run := call(t, cs, "container_run", map[string]any{"image": "alpine", "name": "box"})
-	if run["container_id"] != "abc123" {
-		t.Fatalf("container_run = %v", run)
+	up := call(t, cs, "service_up", map[string]any{"image": "alpine", "name": "box"})
+	if up["name"] != "box" || up["host"] != "box.orb.local" {
+		t.Fatalf("service_up = %v", up)
 	}
-	call(t, cs, "container_exec", map[string]any{"name": "box", "command": "echo hi"})
-	call(t, cs, "container_logs", map[string]any{"name": "box"})
-	call(t, cs, "container_list", map[string]any{"all": true})
-
-	stop := call(t, cs, "container_stop", map[string]any{"name": "box"})
-	if stop["status"] != "stopped" {
-		t.Errorf("container_stop = %v", stop)
+	ran := call(t, cs, "run", map[string]any{"target": "box", "command": "echo hi"})
+	if ran["target"] != "box" || ran["exit_code"] != float64(0) {
+		t.Fatalf("run = %v", ran)
 	}
-	rm := call(t, cs, "container_rm", map[string]any{"name": "box", "force": true})
-	if rm["status"] != "removed" {
-		t.Errorf("container_rm = %v", rm)
+	down := call(t, cs, "service_down", map[string]any{"name": "box"})
+	if down["name"] != "box" {
+		t.Errorf("service_down = %v", down)
 	}
 }
 
@@ -143,35 +164,33 @@ func TestComposeUpInlineYAMLAndImageBuild(t *testing.T) {
 	rec := &recordingDocker{}
 	cs, _ := startSessionWithDocker(t, rec.run)
 
-	up := call(t, cs, "compose_up", map[string]any{
+	up := call(t, cs, "service_up", map[string]any{
 		"project": "stack",
 		"yaml":    "services:\n  web:\n    image: nginx\n",
 	})
-	if up["status"] != "up" {
-		t.Errorf("compose_up = %v", up)
+	if up["project"] != "stack" || up["kind"] != "compose" {
+		t.Errorf("service_up = %v", up)
 	}
 	// Inline YAML must travel on stdin, not argv (see ADR-008).
-	inv := rec.last()
-	if len(inv.Stdin) == 0 {
+	var sawStdin bool
+	for _, inv := range rec.calls() {
+		if len(inv.Stdin) > 0 && strings.Contains(string(inv.Stdin), "image: nginx") {
+			sawStdin = true
+			if strings.Contains(strings.Join(inv.Args, " "), "image: nginx") {
+				t.Errorf("inline YAML leaked into argv: %v", inv.Args)
+			}
+		}
+	}
+	if !sawStdin {
 		t.Error("inline compose YAML was not passed on stdin")
 	}
 
-	// compose_down requires a project definition too (file or yaml), matching
-	// the uniform validation across the compose tools.
-	down := call(t, cs, "compose_down", map[string]any{
-		"project": "stack",
-		"yaml":    "services:\n  web:\n    image: nginx\n",
-	})
-	if down["status"] != "down" {
-		t.Errorf("compose_down = %v", down)
+	down := call(t, cs, "service_down", map[string]any{"project": "stack"})
+	if down["project"] != "stack" {
+		t.Errorf("service_down = %v", down)
 	}
-
-	build := call(t, cs, "image_build", map[string]any{
-		"tag":          "myapp:dev",
-		"context_path": "/tmp/ctx",
-		"dockerfile":   "FROM alpine\n",
-	})
-	if build["status"] != "built" {
-		t.Errorf("image_build = %v", build)
+	inv := rec.last()
+	if strings.Join(inv.Args, " ") != "compose -p stack down" {
+		t.Errorf("service_down args = %v", inv.Args)
 	}
 }

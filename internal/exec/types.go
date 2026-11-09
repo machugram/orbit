@@ -7,6 +7,10 @@
 // multiplexer authenticates only with OrbStack's own key and ignores in-VM
 // authorized_keys, which would defeat the per-VM credential model. The
 // provisioner installs and enables openssh-server for this reason.
+//
+// The Runner pools one SSH client per target id (60s idle TTL) and reuses it
+// across exec / file / script calls. ExecScript uses a single acquired
+// connection for upload, run, and cleanup.
 package exec
 
 import "time"

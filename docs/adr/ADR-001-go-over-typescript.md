@@ -45,7 +45,7 @@ separate maintainers.
 ## Consequences
 
 - The spec's TypeScript project layout (§7) is not followed; the Go layout
-  is documented in README.md instead.
+  is documented in docs/USAGE.md instead.
 - Contributors need Go 1.25+, not Node.
 - The SQLite driver (`modernc.org/sqlite`) is slower than `better-sqlite3`
   under high write load, but the credential store has negligible write volume

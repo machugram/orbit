@@ -155,20 +155,114 @@ func (m *Manager) Run(ctx context.Context, spec RunSpec) (string, error) {
 
 // Exec runs a shell command inside a running container.
 func (m *Manager) Exec(ctx context.Context, name, command string) (*Result, error) {
+	return m.ExecCommand(ctx, name, command, "", nil)
+}
+
+// ExecCommand runs a shell command inside a container. secretEnv is
+// env-var name -> vault key; values are placed only in the docker subprocess
+// environment and passed as bare -e flags.
+func (m *Manager) ExecCommand(ctx context.Context, name, command, namespace string, secretEnv map[string]string) (*Result, error) {
 	if !nameRe.MatchString(name) {
 		return nil, fmt.Errorf("container: invalid name %q", name)
 	}
-	args := []string{"exec", name, "sh", "-c", command}
-	stdout, stderr, err := m.run(ctx, Invocation{Args: args})
-	res := &Result{Stdout: string(stdout), Stderr: string(stderr)}
-	if code, ok := exitCode(err); ok {
-		res.ExitCode = code
-		return res, nil
-	}
+	env, flags, err := m.resolveSecrets(namespace, secretEnv)
 	if err != nil {
 		return nil, err
 	}
-	return res, nil
+	args := []string{"exec"}
+	args = append(args, flags...)
+	args = append(args, name, "sh", "-c", command)
+	stdout, stderr, err := m.run(ctx, Invocation{Args: args, Env: env})
+	return commandResult(stdout, stderr, err)
+}
+
+// ExecScript runs a script inside a container. The script is the interpreter's
+// stdin, so it is not interpolated into a shell command.
+func (m *Manager) ExecScript(ctx context.Context, name, script, interpreter, namespace string, secretEnv map[string]string) (*Result, error) {
+	if !nameRe.MatchString(name) {
+		return nil, fmt.Errorf("container: invalid name %q", name)
+	}
+	if interpreter == "" {
+		interpreter = "sh"
+	}
+	if !interpreterRe.MatchString(interpreter) {
+		return nil, fmt.Errorf("container: invalid interpreter %q", interpreter)
+	}
+	env, flags, err := m.resolveSecrets(namespace, secretEnv)
+	if err != nil {
+		return nil, err
+	}
+	args := []string{"exec", "-i"}
+	args = append(args, flags...)
+	args = append(args, name, interpreter, "-")
+	stdout, stderr, err := m.run(ctx, Invocation{Args: args, Env: env, Stdin: []byte(script)})
+	return commandResult(stdout, stderr, err)
+}
+
+// RunOnce runs a container in the foreground and removes it when it exits.
+// A non-zero exit is returned on Result, not as an error.
+func (m *Manager) RunOnce(ctx context.Context, spec RunSpec) (*Result, error) {
+	spec.Detach = false
+	spec.Remove = true
+	stdout, stderr, err := m.runForeground(ctx, spec, nil)
+	return commandResult(stdout, stderr, err)
+}
+
+// RunScriptOnce runs interpreter with the script on stdin, in a container
+// that is removed when the process exits.
+func (m *Manager) RunScriptOnce(ctx context.Context, spec RunSpec, interpreter, script string) (*Result, error) {
+	if interpreter == "" {
+		interpreter = "sh"
+	}
+	if !interpreterRe.MatchString(interpreter) {
+		return nil, fmt.Errorf("container: invalid interpreter %q", interpreter)
+	}
+	spec.Detach = false
+	spec.Remove = true
+	spec.Command = ""
+	stdout, stderr, err := m.runForeground(ctx, spec, &scriptOnce{interpreter: interpreter, script: script})
+	return commandResult(stdout, stderr, err)
+}
+
+type scriptOnce struct {
+	interpreter string
+	script      string
+}
+
+// runForeground builds a `docker run --rm` invocation. When script is set the
+// interpreter reads it from stdin; otherwise spec.Command is `sh -c`.
+func (m *Manager) runForeground(ctx context.Context, spec RunSpec, script *scriptOnce) (stdout, stderr []byte, err error) {
+	if err := spec.validate(); err != nil {
+		return nil, nil, err
+	}
+	secretEnv, _, err := m.resolveSecrets(spec.Namespace, spec.SecretEnv)
+	if err != nil {
+		return nil, nil, err
+	}
+	env := make(map[string]string, len(spec.Env)+len(secretEnv))
+	for k, v := range spec.Env {
+		env[k] = v
+	}
+	for k, v := range secretEnv {
+		env[k] = v
+	}
+	args := []string{"run", "--rm"}
+	if spec.Name != "" {
+		args = append(args, "--name", spec.Name)
+	}
+	for _, p := range spec.Ports {
+		args = append(args, "-p", p)
+	}
+	args = append(args, bareEnvFlags(env)...)
+	args = append(args, spec.Image)
+	var stdin []byte
+	if script != nil {
+		args = append(args, script.interpreter, "-")
+		stdin = []byte(script.script)
+	} else if spec.Command != "" {
+		args = append(args, "sh", "-c", spec.Command)
+	}
+	return m.run(ctx, Invocation{Args: args, Env: env, Stdin: stdin})
 }
 
 // Logs returns recent logs for a container (tail<=0 means all).
@@ -216,6 +310,64 @@ func (m *Manager) List(ctx context.Context, all bool) ([]Container, error) {
 		})
 	}
 	return out, nil
+}
+
+// Start starts a stopped container.
+func (m *Manager) Start(ctx context.Context, name string) error {
+	if !nameRe.MatchString(name) {
+		return fmt.Errorf("container: invalid name %q", name)
+	}
+	_, _, err := m.run(ctx, Invocation{Args: []string{"start", name}})
+	return err
+}
+
+// PutBytes writes data to path inside a container, creating parent directories.
+func (m *Manager) PutBytes(ctx context.Context, name, path string, data []byte) error {
+	if !nameRe.MatchString(name) {
+		return fmt.Errorf("container: invalid name %q", name)
+	}
+	if err := validContainerPath(path); err != nil {
+		return err
+	}
+	if len(data) > MaxTransfer {
+		return fmt.Errorf("container: %s exceeds the %d byte transfer limit", path, MaxTransfer)
+	}
+	script := `mkdir -p -- "$(dirname "$1")" && cat > "$1"`
+	if len(data) == 0 {
+		script = `mkdir -p -- "$(dirname "$1")" && : > "$1"`
+	}
+	_, _, err := m.run(ctx, Invocation{
+		Args:  []string{"exec", "-i", name, "sh", "-c", script, "sh", path},
+		Stdin: data,
+	})
+	return err
+}
+
+// GetBytes reads path from a container, capped at MaxTransfer.
+func (m *Manager) GetBytes(ctx context.Context, name, path string) ([]byte, error) {
+	if !nameRe.MatchString(name) {
+		return nil, fmt.Errorf("container: invalid name %q", name)
+	}
+	if err := validContainerPath(path); err != nil {
+		return nil, err
+	}
+	stdout, _, err := m.run(ctx, Invocation{
+		Args: []string{"exec", name, "sh", "-c", `cat -- "$1"`, "sh", path},
+	})
+	if err != nil {
+		return nil, err
+	}
+	if len(stdout) > MaxTransfer {
+		return nil, fmt.Errorf("container: %s exceeds the %d byte transfer limit", path, MaxTransfer)
+	}
+	return stdout, nil
+}
+
+func validContainerPath(path string) error {
+	if path == "" || strings.ContainsAny(path, "\n\r\x00") {
+		return fmt.Errorf("container: invalid path %q", path)
+	}
+	return nil
 }
 
 // Stop stops a running container.
@@ -274,6 +426,16 @@ func (m *Manager) ComposeUp(ctx context.Context, spec ComposeSpec) (string, erro
 		return "", err
 	}
 	return strings.TrimSpace(string(stdout) + string(stderr)), nil
+}
+
+// ComposeDownProject tears down a compose project by name. The project was
+// recorded by Docker when it was started, so the compose file is not required.
+func (m *Manager) ComposeDownProject(ctx context.Context, project string) error {
+	if !projectRe.MatchString(project) {
+		return fmt.Errorf("container: invalid compose project %q", project)
+	}
+	_, _, err := m.run(ctx, Invocation{Args: []string{"compose", "-p", project, "down"}})
+	return err
 }
 
 // ComposeDown tears a compose project down.
@@ -452,6 +614,20 @@ func (m *Manager) Build(ctx context.Context, spec BuildSpec) (string, error) {
 		return "", err
 	}
 	return strings.TrimSpace(string(stdout) + string(stderr)), nil
+}
+
+// commandResult turns a docker subprocess outcome into a Result. A non-zero
+// exit is a result; failure to launch is an error.
+func commandResult(stdout, stderr []byte, err error) (*Result, error) {
+	res := &Result{Stdout: string(stdout), Stderr: string(stderr)}
+	if code, ok := exitCode(err); ok {
+		res.ExitCode = code
+		return res, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return res, nil
 }
 
 // exitCode extracts a non-zero process exit code from a runner error so a

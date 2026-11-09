@@ -80,3 +80,24 @@ fi
 echo ORBIT_PROVISIONED
 `
 }
+
+// keyInjectScript updates authorized_keys on a machine that already has
+// sshd (a clone of a warm base). It skips package install and init setup.
+func keyInjectScript() string {
+	return `set -eu
+U="$1"; KEY="$2"
+
+H=$(awk -F: -v u="$U" '$1==u{print $6}' /etc/passwd)
+[ -n "$H" ] || H="/home/$U"
+mkdir -p "$H/.ssh"
+printf '%s\n' "$KEY" > "$H/.ssh/authorized_keys"
+chmod 700 "$H/.ssh"; chmod 600 "$H/.ssh/authorized_keys"
+chown -R "$U" "$H/.ssh" 2>/dev/null || true
+
+if [ -f /etc/shadow ]; then
+  sed -i "s/^$U:!*:/$U:*:/" /etc/shadow 2>/dev/null || true
+fi
+
+echo ORBIT_PROVISIONED
+`
+}
