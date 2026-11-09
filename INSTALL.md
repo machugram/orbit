@@ -46,8 +46,8 @@ claude mcp add orbit -- $(go env GOPATH)/bin/orbit
 ## Option 3: Homebrew
 
 The in-tree [Formula/orbit.rb](Formula/orbit.rb) is a **template**. It is not
-installable until a release is cut and the SHA256 placeholders are replaced
-(see [RELEASE.md](RELEASE.md)). Until then, use Option 1.
+installable until a release is cut and the SHA256 placeholders are replaced.
+Until then, use Option 1.
 
 Once the formula is published to a tap:
 

@@ -2,6 +2,7 @@
 
 | Document | What it covers |
 |---|---|
+| [USAGE.md](USAGE.md) | Tools, resources, configuration, secrets, layout, tests |
 | [SYSTEM_DESIGN.md](SYSTEM_DESIGN.md) | Component responsibilities, data flows, security model, concurrency |
 | [../orbit-presentation.html](../orbit-presentation.html) | Recruiter / technical walkthrough (open in a browser) |
 | [adr/ADR-001](adr/ADR-001-go-over-typescript.md) | Why Go instead of TypeScript |
@@ -20,7 +21,4 @@
 | [adr/ADR-014](adr/ADR-014-exec-secret-env.md) | Vault secret injection for `exec*` tools |
 | [adr/ADR-015](adr/ADR-015-job-shaped-mcp.md) | Job-shaped MCP tools; inventory and diagnostics are resources |
 
-The original brief (TypeScript-era, cloud-init, SSH multiplexer) is
-[ORBIT_SPEC.md](../ORBIT_SPEC.md); this tree and the ADRs are the source of
-truth for what shipped. For the performance and feature backlog see
-[../ROADMAP.md](../ROADMAP.md).
+This tree and the ADRs are the source of truth for what shipped.
