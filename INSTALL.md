@@ -63,7 +63,7 @@ claude mcp add orbit -- $(which orbit)
 
 ## Codex / ChatGPT Work
 
-I build or install the binary somewhere stable, then add Orbit to
+Build or install the binary somewhere stable, then add Orbit to
 `~/.codex/config.toml`:
 
 ```toml
@@ -72,7 +72,7 @@ command = "/absolute/path/to/orbit"
 startup_timeout_sec = 120
 ```
 
-After I restart or reload Codex and the MCP server appears, I read `orbit://info`
+After a reload, read `orbit://info`
 to confirm which binary and paths are active, then read `orbit://doctor` to check
 macOS, OrbStack, Docker, and vault/audit path readiness.
 
@@ -84,7 +84,7 @@ After registration, you should see `orbit` listed in Claude's MCP servers:
 
 **VS Code:** Extensions → Claude → MCP Servers → "orbit" listed
 
-**Codex / ChatGPT Work:** I should see Orbit tools such as `run`,
+**Codex / ChatGPT Work:** the tool list includes `run`,
 `workspace_open`, `service_up`, `secret_put`, and `converge`, plus resources
 `orbit://info` and `orbit://doctor`.
 
@@ -92,7 +92,7 @@ If Orbit fails to start, check:
 - OrbStack is running: `orbctl list` should work
 - Docker is accessible: `docker ps` should work
 - `ORBIT_VAULT_PATH` and `ORBIT_AUDIT_PATH` directories are writable (they default to `~/.orbit/`)
-- `orbit_doctor` reports every check as `ok: true`
+- `orbit://doctor` reports every check as `ok: true`
 
 ## Troubleshooting
 

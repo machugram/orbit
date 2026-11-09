@@ -23,7 +23,7 @@ Claude Agent (MCP client)
 ┌─────────────────────────────────────────────────────────────────┐
 │  orbit binary  (cmd/orbit)                                       │
 │  run  workspace_open/close  service_up/down  file_put/get        │
-│  secret_put  converge          orbit://info doctor workspaces    │
+│  secret_put  converge          orbit://info doctor workspaces secrets │
 │                                                                  │
 │  vm.Manager + Provisioner   vault + keys   exec.Runner           │
 │  container.Manager          microvm.Manager   state.Reconciler   │
@@ -50,7 +50,9 @@ decrypting to garbage.
 Schema: four tables — `vault_meta` (salt + canary), `credentials` (arbitrary
 secrets keyed by namespace+key), `vms` (VM records with state and key_id
 foreign key), `microvms` (nested guests: carrier, image, forwarded SSH port,
-key_id).
+key_id). Closing a VM sets `state=destroyed` and leaves the row. `CreateVM`
+inserts, and on a primary-key conflict it resets that row only when the state
+is `destroyed`, so the same name can be opened again. A live name is rejected.
 
 ### `internal/keys`
 Ed25519 keypair generation and vault-backed key manager. Private keys are
@@ -65,13 +67,15 @@ Two cooperating types:
 `stop`, `destroy`, and poll state. State of truth is always OrbStack; the
 vault's `vms` table caches metadata (distro, key_id, timestamps).
 
-**`Provisioner`** — orchestrates the `vm_create` lifecycle: generate a
-keypair → orbctl create → run a root script via `orb -u root sh -s` →
-set the key on the VM record. On any failure both the VM and key are cleaned
-up so nothing leaks. The provisioning script (`distro.go`) is a single
-distro-agnostic POSIX sh script that detects the package manager and init
-system at runtime — it covers apt, dnf, yum, zypper, pacman, apk, xbps and
-systemd, OpenRC, runit.
+**`Provisioner`** — the path behind `workspace_open` with `kind=vm`. The
+first machine of a distro is created and fully provisioned, then kept as
+`orbit-base-<distro>`. Later machines are `orbctl clone` plus an
+`authorized_keys` inject. The cold script (`distro.go`) runs as root via
+`orb -m <vm> -u root sh -s`. It detects apt, dnf, yum, zypper, pacman, apk,
+or xbps, and systemd, OpenRC, or runit. It also rewrites a password-locked
+`!` shadow field to `*`, because OpenSSH refuses a pubkey while the account
+is locked. A failure deletes the new machine and revokes its key. Warm bases
+cannot be destroyed through `workspace_close`.
 
 ### `internal/exec`
 SSH task runner. How an id maps to an endpoint and key is delegated to an
@@ -83,10 +87,9 @@ Ed25519 key decrypted from the vault — never OrbStack's multiplexer.
 Exposes:
 
 - `Exec` — single command, returns stdout/stderr/exit code
-- `ExecScript` — push a script, execute it, delete it (3 connections today;
-  see ROADMAP §1.3)
-- `Push` / `Pull` — SFTP file transfer (pull capped at 32 MiB)
-- `ExecParallel` — fan-out with a semaphore-bounded WaitGroup
+- `ExecScript` — upload a script, run it, and delete it on one pooled SSH connection
+- `Push` / `PushBytes` / `Pull` — SFTP transfer. `Pull` is capped at 32 MiB
+- `ExecParallel` — fan-out with a semaphore of 8 (`DefaultParallelism`). `run` with `targets` uses the same limit
 
 `Exec`, `ExecScript`, and `ExecParallel` also support vault-backed
 `secret_env`. Tool handlers resolve vault keys to values, log only env-var
@@ -96,15 +99,16 @@ do not appear in the MCP transcript or the SSH command argv (ADR-014).
 ### `internal/container`
 Docker + Compose driver for OrbStack's built-in engine — the fast,
 ephemeral counterpart to full VMs (containers start in 1–3s). Wraps `docker`
-and `docker compose` via an injectable `DockerRunner`. Exposes container
-lifecycle (`Run`/`Exec`/`Logs`/`List`/`Stop`/`Remove`), `Build`, and full
-multi-service stack management: `ComposeUp` (with per-service `Scale`),
-`ComposeDown`, `ComposeLogs`, `ComposePs`, and `ComposeBuild`, from a host
-file or inline YAML. Services in a project share a network and resolve each
-other by name. `ComposePs` surfaces each service's state, health, and
-`<container>.orb.local` host endpoint; `ComposeExec` runs a command in a
-service *by service name* by resolving its container via `ComposePs` and
-reusing the plain `Exec` path (avoiding an inline-file-on-stdin conflict).
+and `docker compose` via an injectable `DockerRunner`. The MCP jobs are
+`service_up`, `service_down`, and `run`. Under those, the manager exposes
+lifecycle (`Run`/`Exec`/`Logs`/`List`/`Stop`/`Remove`/`Start`), `Build`, and
+stack operations: `ComposeUp`, `ComposeDown`, `ComposeDownProject`,
+`ComposeLogs`, `ComposePs`, and `ComposeBuild`, from a host file or inline
+YAML. Services in a project share a network and resolve each other by name.
+`ComposePs` surfaces each service's state, health, and `<container>.orb.local`
+host. `ComposeExec` runs a command in a service by resolving its container
+through `ComposePs` and reusing `Exec`, because `docker compose exec` and
+`-f -` share one stdin.
 
 Its distinguishing feature is **vault secret injection**: `RunSpec.SecretEnv`
 maps an env-var name to a vault key. The value is read from the vault, placed
@@ -113,13 +117,12 @@ only in the docker subprocess's environment, and handed to docker as a bare
 log (see ADR-005). Containers are not mirrored in the vault; `docker ps` is
 the source of truth.
 
-`compose_up`, `compose_down`, `compose_logs`, and `compose_build` accept either
-a host file path or **inline YAML piped on stdin** via `docker compose -f -`,
-so an agent can define and launch a stack without writing host files (see
-ADR-008). `ComposeExec` resolves a service's running container via `ComposePs`
-and reuses the plain `docker exec` path, avoiding a stdin conflict with the
-inline-YAML approach (see ADR-006). Credential IDs use `crypto/rand` hex via
-`newID()`, keeping the module's direct dependency list minimal (see ADR-007).
+`service_up` accepts a host compose file or inline YAML. Inline YAML is piped
+with `docker compose -f -` so the server never writes a temp file (ADR-008).
+A relative `build:` context is resolved against the orbit process working
+directory. `service_down` for a project is `docker compose -p <project> down`
+and does not need the file. Credential IDs use `crypto/rand` hex via
+`newID()` (ADR-007).
 
 ### `internal/microvm`
 Nested QEMU/TCG guests running inside a carrier OrbStack VM, each with its
@@ -162,8 +165,8 @@ Append-only JSONL log at `~/.orbit/audit.log`. Every tool call is written
 with a nanosecond timestamp, tool name, call detail, and success/error. No
 secret values are ever logged — the constraint is enforced by design: tool
 handlers log only metadata (VM IDs, key labels, namespaces). This is the
-Phase-1 observability primitive; structured `slog` logging, per-call timing,
-and `container_stats`/`vm_stats` are deferred to ROADMAP §4 (see ADR-009).
+observability primitive. The log records success or error, not duration.
+Structured logging and live resource stats are not implemented (ADR-009).
 
 ### `internal/keychain`
 Resolves the vault passphrase at startup: `ORBIT_PASSPHRASE` env var takes
@@ -230,8 +233,9 @@ agent calls service_up(image="postgres:16", name="db",
   │   (the agent supplies only the env-var NAME and the vault KEY name)
   │
   ├─ container.Manager.Run()
-  │    ├─ resolveSecrets("default", {...})
-  │    │    └─ vault.GetCredential("default", "prod-db-pw")  → value (in memory)
+  │    ├─ resolveSecrets(agent namespace, {...})
+  │    │    └─ vault.GetCredential("", "prod-db-pw")  → value (in memory)
+  │    │       an empty namespace is the process agent namespace
   │    │    └─ env  = {POSTGRES_PASSWORD: <value>}     (subprocess env only)
   │    │       flags = ["-e", "POSTGRES_PASSWORD"]      (bare, NO value in argv)
   │    │
@@ -309,11 +313,8 @@ path for vault secret injection.
 
 ## Concurrency
 
-- **SQLite**: single write connection (`SetMaxOpenConns(1)`) with WAL mode.
-  Reads are fast but serialize behind writes. See ROADMAP §1.5 for the
-  read-pool improvement path.
-- **`exec_parallel`**: WaitGroup + buffered channel semaphore, default
-  parallelism 8 (`DefaultParallelism`). Each goroutine opens its own SSH
-  connection.
+- **SQLite**: one connection (`SetMaxOpenConns(1)`) with WAL mode. Reads and
+  writes share that connection, so a parallel `run` serializes its vault lookups.
+- **`run` with `targets`**: a semaphore of 8. Each target uses the SSH pool.
 - **MCP server**: `go-sdk` handles concurrent tool calls from the client.
   The vault's single connection is the natural serialization point.

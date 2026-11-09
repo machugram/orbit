@@ -17,8 +17,8 @@
 | [adr/ADR-010](adr/ADR-010-vault-passphrase-keychain.md) | Vault passphrase via macOS Keychain with env-var override |
 | [adr/ADR-011](adr/ADR-011-ssh-host-key-trust-model.md) | Trust-on-connect for loopback SSH; pinning deferred |
 | [adr/ADR-012](adr/ADR-012-nested-microvm-ebpf-isolation.md) | Nested QEMU/TCG guests with their own kernel for eBPF |
-| [adr/ADR-013](adr/ADR-013-typed-state-schema-and-diagnostics.md) | Typed state tool schemas and `orbit_*` diagnostics |
-| [adr/ADR-014](adr/ADR-014-exec-secret-env.md) | Vault secret injection for `exec*` tools |
+| [adr/ADR-013](adr/ADR-013-typed-state-schema-and-diagnostics.md) | Typed `converge` state; diagnostics later became `orbit://` resources |
+| [adr/ADR-014](adr/ADR-014-exec-secret-env.md) | Vault values injected over SSH stdin for `run` |
 | [adr/ADR-015](adr/ADR-015-job-shaped-mcp.md) | Job-shaped MCP tools; inventory and diagnostics are resources |
 
-This tree and the ADRs are the source of truth for what shipped.
+[USAGE.md](USAGE.md) and [ADR-015](adr/ADR-015-job-shaped-mcp.md) describe the agent-facing surface. Earlier ADRs keep the tool names they introduced; the mechanisms they record still stand.

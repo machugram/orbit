@@ -3,6 +3,8 @@
 **Status:** Accepted  
 **Date:** 2026-10-14
 
+ADR-015 removed `cred_get` and the `exec` tools. `secret_env` is an argument of `run` and `service_up`. The agent does not choose a vault namespace. The stdin injection below is unchanged.
+
 ## Context
 
 `cred_get` intentionally returns a secret value to the MCP caller. That is an

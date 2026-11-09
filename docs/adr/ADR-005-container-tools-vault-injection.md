@@ -3,6 +3,8 @@
 **Status:** Accepted  
 **Date:** 2026-06
 
+ADR-015 folded the `container_*` and `compose_*` tools into `service_up`, `service_down`, and `run`. Bare `-e NAME` injection is unchanged. The agent does not pass a namespace or a replica count.
+
 ## Context
 
 The original design gave the agent isolated VMs via `vm_create`. VMs are the

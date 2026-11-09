@@ -3,6 +3,8 @@
 **Status:** Accepted  
 **Date:** 2026-10-14
 
+ADR-015 is the agent-facing surface. `converge` is the only state tool, and it creates what is missing. It does not delete. `orbit://info` and `orbit://doctor` are resources, not tools. `State.Validate()` is unchanged.
+
 ## Context
 
 The `state_*` tools originally accepted the desired-state document as
